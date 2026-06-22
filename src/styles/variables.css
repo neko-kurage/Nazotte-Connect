@@ -1,0 +1,12 @@
+/* --- PC版（共通） --- */
+:root {
+  --font-base: "source-han-sans-japanese", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-text: #ffffff;
+  --color-page-start: #16192d;
+  --color-page-middle: #3e164b;
+  --color-page-end: #0f3d47;
+  --content-max-width: 470px;
+  --focus-ring: 3px solid rgba(255, 255, 255, .86);
+
+  line-height: 1.5;
+}

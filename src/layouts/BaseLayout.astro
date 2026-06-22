@@ -1,0 +1,31 @@
+---
+import "../styles/main.css";
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const adobeFontsKitId = import.meta.env.PUBLIC_ADOBE_FONTS_KIT_ID;
+---
+
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#16192d" />
+    <title>{title}</title>
+    {adobeFontsKitId && (
+      <>
+        <link rel="preconnect" href="https://use.typekit.net" crossorigin />
+        <link rel="stylesheet" href={`https://use.typekit.net/${adobeFontsKitId}.css`} />
+      </>
+    )}
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

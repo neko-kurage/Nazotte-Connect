@@ -1,0 +1,31 @@
+<main class="game" data-game>
+  <h1>なぞってコネクト</h1>
+
+  <div class="hud" aria-label="ゲーム情報">
+    <div>
+      <span class="small">SCORE</span>
+      <span class="big" id="score" data-score>0</span>
+    </div>
+    <div>
+      <span class="small">TIME</span>
+      <span class="big"><span id="time" data-time>75</span>s</span>
+    </div>
+    <div>
+      <span class="small">CHAIN</span>
+      <span class="big" id="chain" data-chain>0</span>
+    </div>
+  </div>
+
+  <div class="boardWrap" id="boardWrap" data-board-wrap>
+    <svg id="lineLayer" data-line-layer aria-hidden="true"></svg>
+    <div class="board" id="board" data-board aria-label="パズル盤面"></div>
+  </div>
+
+  <div class="controls" aria-label="ゲーム操作">
+    <button class="controlButton controlButtonPrimary" id="start" data-start type="button">スタート</button>
+    <button class="controlButton controlButtonSecondary" id="hint" data-hint type="button">ヒント</button>
+  </div>
+  <p class="message" id="message" data-message>
+    通常ブロックだけを同じ個数で連続消しするとREN。★技連続でBTB x2。全色混ぜると時間+30秒。
+  </p>
+</main>

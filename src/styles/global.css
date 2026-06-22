@@ -1,0 +1,33 @@
+/* --- PC版（共通） --- */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    min-height: 100%;
+    background: var(--color-page-end);
+  }
+
+  body {
+    min-height: 100dvh;
+    margin: 0;
+    font-family: var(--font-base);
+    color: var(--color-text);
+    background: linear-gradient(160deg, var(--color-page-start), var(--color-page-middle) 55%, var(--color-page-end));
+    touch-action: none;
+    overflow: hidden;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 3px;
+  }
+}

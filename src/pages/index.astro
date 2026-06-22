@@ -1,0 +1,14 @@
+---
+import GameStage from "../components/GameStage.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="なぞってコネクト"
+  description="同じ色のピースをなぞって消し、特殊ピースと連鎖で高得点を狙うブラウザゲーム。"
+>
+  <GameStage />
+  <script>
+    import "../scripts/game.ts";
+  </script>
+</BaseLayout>

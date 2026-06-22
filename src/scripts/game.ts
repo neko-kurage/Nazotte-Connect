@@ -1,0 +1,1273 @@
+type TileKind = "normal" | "special";
+type ChainMode = "color" | "special";
+type GameTile = HTMLDivElement;
+type BoardCell = GameTile | null;
+type Point = { x: number; y: number };
+type CellPoint = { r: number; c: number };
+type RenInfo = { count: number; bonus: number; makeSpecial: boolean; color: number | null };
+type BtbInfo = { active: boolean; points: number };
+type KeepSpecialInfo = { mode: "keep"; tile: GameTile; color: number | null };
+type NormalCellsInfo = { mode: "normalCells"; cells: CellPoint[]; color: number; usedSpecials: GameTile[] };
+type CreateSpecialInfo = KeepSpecialInfo | NormalCellsInfo | null;
+
+const requiredElement = <T extends Element>(id: string, expected: { new (...args: unknown[]): T }): T => {
+  const element = document.getElementById(id);
+  if (!(element instanceof expected)) {
+    throw new Error(`Required element #${id} is missing.`);
+  }
+  return element;
+};
+
+const isGameTile = (element: Element | null): element is GameTile => {
+  return element instanceof HTMLDivElement && element.classList.contains("tile");
+};
+
+const initNazotteConnect = (): void => {
+const SIZE = 6;
+const COLORS = 5;
+const GAP = 7;
+const board = requiredElement("board", HTMLDivElement);
+const wrap = requiredElement("boardWrap", HTMLDivElement);
+const svg = requiredElement("lineLayer", SVGSVGElement);
+const scoreEl = requiredElement("score", HTMLSpanElement);
+const timeEl = requiredElement("time", HTMLSpanElement);
+const chainEl = requiredElement("chain", HTMLSpanElement);
+const startBtn = requiredElement("start", HTMLButtonElement);
+const hintBtn = requiredElement("hint", HTMLButtonElement);
+const messageEl = requiredElement("message", HTMLParagraphElement);
+
+let grid: BoardCell[][] = [];
+let selected: GameTile[] = [];
+let selectedColor: number | null = null;
+let chainMode: ChainMode | null = null;
+let dragging = false;
+let resolving = false;
+let score = 0;
+let timeLeft = 75;
+let playing = false;
+let timer: number | null = null;
+let combo = 0;
+let lastRenCount = 0;
+let renStreak = 0;
+let btbReady = false;
+let armedSpecial: GameTile | null = null;
+let timePaused = false;
+let bonusLocked = false;
+let longPressTimer: number | null = null;
+let longPressStarted = false;
+let pendingSpecialTile: GameTile | null = null;
+let startPoint: Point | null = null;
+const LONG_PRESS_MS = 260;
+const SLIDE_START_PX = 12;
+
+function randColor(): number { return Math.floor(Math.random() * COLORS); }
+function tileSize(): number { return (board.clientWidth - GAP * (SIZE - 1)) / SIZE; }
+function pos(row: number, col: number): { left: number; top: number; size: number } {
+  var s = tileSize();
+  return { left: col * (s + GAP), top: row * (s + GAP), size: s };
+}
+
+function makeTile(row: number, col: number, color: number | null, spawnFromAbove: boolean, type: TileKind | undefined): GameTile {
+  var tile = document.createElement("div");
+  tile.dataset.row = String(row);
+  tile.dataset.col = String(col);
+  tile.dataset.color = String(color);
+  tile.dataset.type = type || "normal";
+  applyClass(tile);
+  tile.textContent = "";
+  var p = pos(row, col);
+  tile.style.width = p.size + "px";
+  tile.style.height = p.size + "px";
+  tile.style.left = p.left + "px";
+  tile.style.top = (spawnFromAbove ? p.top - board.clientHeight * 0.35 : p.top) + "px";
+  board.appendChild(tile);
+  if (spawnFromAbove) {
+    requestAnimationFrame(function () {
+      tile.classList.add("spawn");
+      moveTile(tile, row, col);
+    });
+  }
+  return tile;
+}
+
+function applyClass(tile: GameTile): void {
+  var type = tile.dataset.type || "normal";
+  var color = tile.dataset.color || "0";
+  tile.className = "tile c" + color + (type === "special" ? " special" : "");
+}
+
+function moveTile(tile: GameTile, row: number, col: number): void {
+  tile.dataset.row = String(row);
+  tile.dataset.col = String(col);
+  var p = pos(row, col);
+  tile.style.width = p.size + "px";
+  tile.style.height = p.size + "px";
+  tile.style.left = p.left + "px";
+  tile.style.top = p.top + "px";
+}
+
+function buildBoard(): void {
+  board.innerHTML = "";
+  grid = [];
+  for (var r = 0; r < SIZE; r++) {
+    grid[r] = [];
+    for (var c = 0; c < SIZE; c++) {
+      grid[r][c] = makeTile(r, c, randColor(), false, "normal");
+    }
+  }
+  ensurePlayable(true);
+  updateLine();
+}
+
+function startGame(): void {
+  score = 0;
+  timeLeft = 75;
+  combo = 0;
+  lastRenCount = 0;
+  renStreak = 0;
+  btbReady = false;
+  playing = true;
+  resolving = false;
+  timePaused = false;
+  bonusLocked = false;
+  selected = [];
+  selectedColor = null;
+  chainMode = null;
+  dragging = false;
+  armedSpecial = null;
+  scoreEl.textContent = "0";
+  timeEl.textContent = String(timeLeft);
+  chainEl.textContent = "0";
+  messageEl.textContent = "通常ブロックだけの同数連続消しでREN！★を挟むとRENは切れる。★技連続はBTB x2！";
+  startBtn.disabled = true;
+  buildBoard();
+  if (timer !== null) window.clearInterval(timer);
+  timer = window.setInterval(function () {
+    if (timePaused) return;
+    timeLeft -= 1;
+    timeEl.textContent = String(timeLeft);
+    if (timeLeft <= 0) endGame();
+  }, 1000);
+}
+
+function endGame(): void {
+  playing = false;
+  resolving = false;
+  timePaused = false;
+  bonusLocked = false;
+  btbReady = false;
+  if (timer !== null) window.clearInterval(timer);
+  clearSelection();
+  disarmSpecial();
+  startBtn.disabled = false;
+  var rank = judgeRank(score);
+  messageEl.textContent = "終了！スコア " + score + " / ランク: " + rank;
+}
+
+function judgeRank(score: number): string {
+  // 得点設計に合わせて、★技やレインボーが噛み合っても神ランクが遠くなるよう調整。
+  // 旧版は15,000点で最高ランクだったため、特殊連鎖に慣れるとすぐ天井に到達していた。
+  if (score >= 1000000) return "宇宙コネクト神";
+  if (score >= 750000) return "銀河盤面の覇者";
+  if (score >= 500000) return "虹色創造神";
+  if (score >= 350000) return "盤面構築の神";
+  if (score >= 250000) return "なぞりの魔王";
+  if (score >= 180000) return "レインボー支配者";
+  if (score >= 120000) return "特殊職人・極";
+  if (score >= 80000) return "連鎖マスター";
+  if (score >= 50000) return "特殊職人";
+  if (score >= 30000) return "盤面づくり上手";
+  if (score >= 15000) return "上手い";
+  if (score >= 7000) return "慣れてきた";
+  return "ふつう";
+}
+
+function getTileFromPoint(x: number, y: number): GameTile | null {
+  var el = document.elementFromPoint(x, y);
+  return isGameTile(el) ? el : null;
+}
+
+function isSpecial(tile: GameTile | null): tile is GameTile {
+  return Boolean(tile && tile.dataset.type === "special");
+}
+
+function adjacent(a: GameTile, b: GameTile): boolean {
+  var ar = Number(a.dataset.row), ac = Number(a.dataset.col);
+  var br = Number(b.dataset.row), bc = Number(b.dataset.col);
+  var dr = Math.abs(ar - br), dc = Math.abs(ac - bc);
+  return dr <= 1 && dc <= 1 && dr + dc > 0;
+}
+
+function pointerStart(e: MouseEvent | TouchEvent): void {
+  if (!playing || resolving || bonusLocked) return;
+  e.preventDefault();
+
+  var p = point(e);
+  var tile = getTileFromPoint(p.x, p.y);
+  longPressStarted = false;
+  pendingSpecialTile = null;
+  startPoint = p;
+  clearLongPressTimer();
+
+  if (tile && armedSpecial) {
+    handleArmedTap(tile);
+    return;
+  }
+
+  if (tile && isSpecial(tile)) {
+    // 短いタップ: ★移動モード
+    // 長押し: ★同士チェーン開始
+    pendingSpecialTile = tile;
+    longPressTimer = setTimeout(function () {
+      if (!pendingSpecialTile || resolving || !playing) return;
+      longPressStarted = true;
+      disarmSpecial();
+      clearSelection();
+      dragging = true;
+      addTile(pendingSpecialTile);
+      messageEl.textContent = "★チェーン中。同色なら方向ライン生成、異色なら大量破壊！";
+    }, LONG_PRESS_MS);
+    return;
+  }
+
+  disarmSpecial();
+  clearSelection();
+  dragging = true;
+  addTile(tile);
+}
+
+function pointerMove(e: MouseEvent | TouchEvent): void {
+  if (!playing || resolving || bonusLocked) return;
+  e.preventDefault();
+  var p = point(e);
+
+  if (pendingSpecialTile && !longPressStarted) {
+    if (!startPoint) return;
+    var dx = p.x - startPoint.x;
+    var dy = p.y - startPoint.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist > SLIDE_START_PX) {
+      // ★を押してスライドし始めたら、長押しを待たずに★チェーン開始
+      clearLongPressTimer();
+      longPressStarted = true;
+      disarmSpecial();
+      clearSelection();
+      dragging = true;
+      addTile(pendingSpecialTile);
+      messageEl.textContent = "★チェーン中。同色なら方向ライン生成、異色なら大量破壊！";
+    } else {
+      return;
+    }
+  }
+
+  if (!dragging) return;
+
+  addTile(getTileFromPoint(p.x, p.y));
+}
+
+function pointerEnd(e: MouseEvent | TouchEvent): void {
+  if (!playing || resolving || bonusLocked) return;
+  e.preventDefault();
+
+  if (pendingSpecialTile && !longPressStarted) {
+    var tile = pendingSpecialTile;
+    clearLongPressTimer();
+    pendingSpecialTile = null;
+
+    if (isSpecial(tile)) {
+      armSpecial(tile);
+    }
+    return;
+  }
+
+  clearLongPressTimer();
+  pendingSpecialTile = null;
+
+  if (!dragging) return;
+  dragging = false;
+  releaseChain();
+}
+
+function clearLongPressTimer(): void {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function point(e: MouseEvent | TouchEvent): Point {
+  if ("touches" in e) {
+    var touch = e.touches[0];
+    return touch ? { x: touch.clientX, y: touch.clientY } : { x: 0, y: 0 };
+  }
+  return { x: e.clientX, y: e.clientY };
+}
+
+function armSpecial(tile: GameTile): void {
+  disarmSpecial();
+  clearSelection();
+  armedSpecial = tile;
+  tile.classList.add("armed");
+  messageEl.textContent = "★選択中。移動させたいピースをタップ！";
+}
+
+function disarmSpecial(): void {
+  if (armedSpecial && armedSpecial.classList) armedSpecial.classList.remove("armed");
+  armedSpecial = null;
+}
+
+function handleArmedTap(target: GameTile | null): void {
+  if (!armedSpecial || !target || target === armedSpecial) {
+    disarmSpecial();
+    return;
+  }
+
+  if (!playing || resolving) return;
+
+  // 仕様: タップしたピースが★の場所に移動し、元の場所は空白になる。
+  // その後、空白を落下で埋める。★自体は消費される。
+  resolving = true;
+
+  var sr = Number(armedSpecial.dataset.row);
+  var sc = Number(armedSpecial.dataset.col);
+  var tr = Number(target.dataset.row);
+  var tc = Number(target.dataset.col);
+
+  armedSpecial.classList.remove("armed");
+  if (armedSpecial.parentNode) armedSpecial.parentNode.removeChild(armedSpecial);
+
+  grid[sr][sc] = target;
+  grid[tr][tc] = null;
+  moveTile(target, sr, sc);
+
+  showEmptyMark(tr, tc);
+  disarmSpecial();
+
+  score += 120;
+  scoreEl.textContent = String(score);
+  messageEl.textContent = "ピース移動！ 空いた場所から落下";
+  floatText("MOVE +120", false);
+
+  setTimeout(function () {
+    applyGravityAndSpawn(null);
+    setTimeout(function () {
+      resolving = false;
+      removeSpawnMarks();
+      ensurePlayable(false);
+      messageEl.textContent = "配置を作って5個以上を狙え！";
+    }, 270);
+  }, 230);
+}
+
+function showEmptyMark(row: number, col: number): void {
+  var p = pos(row, col);
+  var mark = document.createElement("div");
+  mark.className = "emptyMark";
+  mark.style.width = p.size + "px";
+  mark.style.height = p.size + "px";
+  mark.style.left = p.left + "px";
+  mark.style.top = p.top + "px";
+  board.appendChild(mark);
+  setTimeout(function () { if (mark.parentNode) mark.parentNode.removeChild(mark); }, 360);
+}
+
+function addTile(tile: GameTile | null): void {
+  if (!playing || resolving || !tile) return;
+  var color = Number(tile.dataset.color);
+
+  if (selected.length === 0) {
+    chainMode = isSpecial(tile) ? "special" : "color";
+    selectedColor = color;
+    selected.push(tile);
+    tile.classList.add("selected");
+    updateLine();
+    chainEl.textContent = String(selected.length);
+    return;
+  }
+
+  var last = selected[selected.length - 1];
+
+  if (selected.length >= 2 && tile === selected[selected.length - 2]) {
+    last.classList.remove("selected");
+    selected.pop();
+    updateLine();
+    chainEl.textContent = String(selected.length);
+    return;
+  }
+
+  if (selected.indexOf(tile) !== -1) return;
+  if (!adjacent(last, tile)) return;
+
+  if (chainMode === "special") {
+    // 特殊チェーンは色に関係なく★同士を繋げられる。
+    // 同色だけなら横列を普通ピース化、異色を含むなら大量破壊。
+    if (!isSpecial(tile)) return;
+  } else {
+    // 通常チェーンは同色のみ。特殊も同色なら含められる
+    if (Number(tile.dataset.color) !== selectedColor) return;
+  }
+
+  selected.push(tile);
+  tile.classList.add("selected");
+  updateLine();
+  chainEl.textContent = String(selected.length);
+}
+
+function resetRen(): void {
+  lastRenCount = 0;
+  renStreak = 0;
+}
+
+function calcRenBonus(clearCount: number, color: number | null): RenInfo {
+  if (lastRenCount === clearCount) {
+    renStreak += 1;
+  } else {
+    lastRenCount = clearCount;
+    renStreak = 1;
+  }
+
+  var bonus = renStepBonus(clearCount, renStreak);
+  return {
+    count: renStreak,
+    bonus: bonus,
+    makeSpecial: renStreak > 0 && renStreak % 5 === 0,
+    color: color
+  };
+}
+
+function renTargetAt10(clearCount: number): number {
+  // 「10RENに到達した時点の合計得点」の目安。
+  // RENは強いが、特殊技を食わない中得点に抑える。
+  // 3個=約5,000 / 4個=約9,000 / 5個=約14,000 / 6個=約19,000 ...
+  if (clearCount <= 3) return 5000;
+  if (clearCount === 4) return 9000;
+  return 9000 + (clearCount - 4) * 5000;
+}
+
+function estimatedNormalBaseTotalAt10(clearCount: number): number {
+  // 通常消し10回ぶんの基礎点の概算。
+  // RENボーナスだけでなく、基礎点込みの合計が目安に近づくように差し引く。
+  return clearCount * clearCount * 14 * 10 + 45 * 55;
+}
+
+function renCumulativeBonusTarget(clearCount: number, streak: number): number {
+  if (streak < 2) return 0;
+
+  var targetBonusAt10 = Math.max(0, renTargetAt10(clearCount) - estimatedNormalBaseTotalAt10(clearCount));
+
+  if (streak <= 5) {
+    // 1〜5RENは気持ちよく伸びる。
+    var earlyProgress = (streak - 1) / 4;
+    return Math.round(targetBonusAt10 * 0.58 * Math.pow(earlyProgress, 1.55));
+  }
+
+  if (streak <= 10) {
+    // 6〜10RENは伸びるが控えめ。10RENで目標累計に到達。
+    var lateProgress = (streak - 5) / 5;
+    return Math.round(targetBonusAt10 * (0.58 + 0.42 * Math.pow(lateProgress, 1.75)));
+  }
+
+  // 10REN以降はかなり控えめ。継続は嬉しいが、特殊技の価値を超えにくくする。
+  var extra = streak - 10;
+  return Math.round(targetBonusAt10 * (1 + 0.08 * Math.sqrt(extra)));
+}
+
+function renStepBonus(clearCount: number, streak: number): number {
+  return Math.max(
+    0,
+    renCumulativeBonusTarget(clearCount, streak) - renCumulativeBonusTarget(clearCount, streak - 1)
+  );
+}
+
+function renText(info: RenInfo | null): string {
+  if (!info || info.count < 2) return "";
+  return " / " + info.count + "REN +" + info.bonus + (info.makeSpecial ? " ★生成" : "");
+}
+
+function applyBtbIfNeeded(points: number, isSpecialTechnique: boolean): BtbInfo {
+  var active = isSpecialTechnique && btbReady;
+  var finalPoints = active ? points * 2 : points;
+
+  // BTBは「特殊ブロックを含む特殊消し」が連続した時だけ継続。
+  // 通常消し、通常の5個消し★生成では切れる。倍率は何連続しても2倍固定。
+  if (isSpecialTechnique) {
+    btbReady = true;
+  } else {
+    btbReady = false;
+  }
+
+  return { active: active, points: finalPoints };
+}
+
+function btbText(info: BtbInfo | null): string {
+  return info && info.active ? " / BTB x2" : "";
+}
+
+function showBtbFloat(info: BtbInfo | null): void {
+  if (info && info.active) floatText("BTB x2!", true);
+}
+
+function applyRenSpecialIfNeeded(info: RenInfo | null, currentInfo: CreateSpecialInfo, targets: GameTile[]): CreateSpecialInfo {
+  if (!info || !info.makeSpecial) return currentInfo;
+  if (currentInfo) return currentInfo;
+
+  var keeper = lastNormalInSelection(selected) || selected[selected.length - 1];
+  if (!keeper) return currentInfo;
+
+  for (var i = targets.length - 1; i >= 0; i--) {
+    if (targets[i] === keeper) targets.splice(i, 1);
+  }
+  floatText(info.count + "REN ★生成!", true);
+  return { mode: "keep", tile: keeper, color: info.color };
+}
+
+function releaseChain(): void {
+  var isSpecialChain = chainMode === "special" && selected.length >= 2;
+
+  if (selected.length >= 3 || isSpecialChain) {
+    resolving = true;
+
+    var n = selected.length;
+    var specials = selected.filter(isSpecial);
+    combo += 1;
+
+    var targets: GameTile[] = selected.slice();
+    var gained = 0;
+    var createSpecialInfo: CreateSpecialInfo = null;
+    var superExplosion = false;
+
+    if (isSpecialChain) {
+      var sameColor = allSameColor(specials);
+      var color = Number(specials[0].dataset.color);
+      resetRen();
+
+      if (sameColor) {
+        // 同じ色の★同士:
+        // 繋いだ方向のライン全体を同じ色の普通ピースにする。
+        // ★の数が増えるほどかなり強くなる。
+        var pathCells = directionalCellsFromPath(specials);
+        var sameMultiplier = specials.length * specials.length;
+        var longChainBonus = specials.length >= 5 ? 9000 : specials.length >= 4 ? 5200 : specials.length >= 3 ? 2200 : 0;
+        // 同色★ラインは仕込み型の高得点技。2個で4,000〜7,000、3個で10,000〜16,000が目安。
+        gained = pathCells.length * 230 * specials.length + sameMultiplier * 720 + longChainBonus + combo * 160;
+        var btbInfo = applyBtbIfNeeded(gained, true);
+        gained = btbInfo.points;
+        score += gained;
+        scoreEl.textContent = String(score);
+        messageEl.textContent = "同色★" + specials.length + "連結！ ライン生成 +" + gained + btbText(btbInfo);
+        linePaintEffects(specials, gained);
+        showBtbFloat(btbInfo);
+
+        createSpecialInfo = {
+          mode: "normalCells",
+          cells: pathCells,
+          color: color,
+          // 使用した★は消費扱いで普通ピースに戻す。
+          // ラインに巻き込まれただけの未使用★は、従来どおり★のまま色だけ変える。
+          usedSpecials: specials.slice()
+        };
+        targets = [];
+        superExplosion = false;
+      } else {
+        // 異なる色の★を混ぜた場合:
+        // 大量破壊。全色混ぜると特別ボーナス。
+        targets = mixedSpecialTargets(specials);
+        var colorCount = uniqueColorCount(specials);
+        // 異色★爆発はピンチ脱出＋瞬間高得点。全色ミックスは時間ボーナス込みの超大技。
+        var allColorBonus = colorCount >= COLORS ? 12000 + targets.length * 160 : 0;
+        gained = targets.length * 75 * (specials.length + 1) + specials.length * specials.length * 650 + colorCount * 400 + allColorBonus + combo * 120;
+        var btbInfo = applyBtbIfNeeded(gained, true);
+        gained = btbInfo.points;
+        score += gained;
+        scoreEl.textContent = String(score);
+
+        if (colorCount >= COLORS) {
+          messageEl.textContent = "全色★ミックス！ レインボーボーナス +" + gained + btbText(btbInfo);
+          megaEffects(specials.length + 2, gained);
+          rainbowEffects(gained);
+        } else {
+          messageEl.textContent = "異色★ミックス！ 大量破壊 +" + gained + btbText(btbInfo);
+          megaEffects(specials.length, gained);
+        }
+        showBtbFloat(btbInfo);
+        superExplosion = true;
+      }
+    } else {
+      if (n >= 5 && specials.length > 0) {
+        // ★を含めて5個以上消した場合:
+        // その色の普通ピースを全消ししつつ、新しい★も生成する。
+        // 既存★は保護。新★はチェーン内の最後の普通ピースを残して★化する。
+        var colorToClear = selectedColor;
+        var keeper = lastNormalInSelection(selected);
+        var colorClearTargets = allTilesOfColor(colorToClear);
+
+        if (keeper) {
+          colorClearTargets = colorClearTargets.filter(function (t) { return t !== keeper; });
+          targets = uniqueTiles(targets.concat(colorClearTargets)).filter(function (t) { return t !== keeper; });
+          createSpecialInfo = { mode: "keep", tile: keeper, color: selectedColor };
+        } else {
+          targets = uniqueTiles(targets.concat(colorClearTargets));
+        }
+
+        // RENは「通常ブロックだけを同じ数で連続して消した時」だけ。
+        // ★を含む色全消しは特殊技なのでRENは切れる。
+        resetRen();
+        gained = targets.length * 90 + n * n * 22 + specials.length * 720 + combo * 90 + 650;
+        var btbInfo = applyBtbIfNeeded(gained, true);
+        gained = btbInfo.points;
+        score += gained;
+        scoreEl.textContent = String(score);
+        messageEl.textContent = "★込み5個以上！ 色全消し＋★生成 +" + gained + btbText(btbInfo);
+        megaEffects(2 + specials.length, gained);
+        showBtbFloat(btbInfo);
+        superExplosion = true;
+      } else {
+        var renInfo: RenInfo | null = null;
+        if (specials.length === 0) {
+          // RENは通常ブロックだけ。同じ個数なら5個以上でも継続する。
+          renInfo = calcRenBonus(n, selectedColor);
+        } else {
+          // 同色チェーンに★を混ぜた場合もRENは切れる。
+          resetRen();
+        }
+
+        gained = n * n * 14 + combo * 45 + specials.length * 280 + (renInfo ? renInfo.bonus : 0);
+        var btbInfo = applyBtbIfNeeded(gained, false);
+        gained = btbInfo.points;
+
+        if (n >= 5) {
+          // バグ対策:
+          // 生成位置は落下後の座標に上書きしない。
+          // 消したピース自身を特殊化して残す方式にする。
+          var generatedKeeper = selected[selected.length - 1];
+          targets = selected.filter(function (t) { return t !== generatedKeeper; });
+          createSpecialInfo = { mode: "keep", tile: generatedKeeper, color: selectedColor };
+          messageEl.textContent = n + "個消し！ ★生成 +" + gained + renText(renInfo);
+          if (renInfo && renInfo.count >= 2) {
+            floatText(renInfo.count + "REN +" + renInfo.bonus, true);
+          } else {
+            floatText("★生成!", false);
+          }
+        } else {
+          createSpecialInfo = applyRenSpecialIfNeeded(renInfo, createSpecialInfo, targets);
+          messageEl.textContent = n + "個消し！ +" + gained + renText(renInfo);
+          floatText(renInfo && renInfo.count >= 2 ? renInfo.count + "REN +" + renInfo.bonus : "+" + gained, Boolean(renInfo && renInfo.count >= 2));
+        }
+        score += gained;
+        scoreEl.textContent = String(score);
+      }
+    }
+
+    vanishDropAndFill(targets, createSpecialInfo, superExplosion);
+  } else {
+    if (chainMode === "special") {
+      messageEl.textContent = "★チェーンは長押しから。2個以上つなげよう！";
+    } else {
+      messageEl.textContent = "3個以上つなげて消そう";
+    }
+    clearSelection();
+  }
+}
+
+function allSameColor(tiles: GameTile[]): boolean {
+  if (!tiles.length) return false;
+  var color = Number(tiles[0].dataset.color);
+  return tiles.every(function (t) {
+    return Number(t.dataset.color) === color;
+  });
+}
+
+function uniqueColorCount(tiles: GameTile[]): number {
+  var colors: number[] = [];
+  tiles.forEach(function (t) {
+    var color = Number(t.dataset.color);
+    if (colors.indexOf(color) === -1) colors.push(color);
+  });
+  return colors.length;
+}
+
+function linePaintEffects(path: GameTile[], gained: number): void {
+  wrap.classList.add("megaShake");
+  setTimeout(function () { wrap.classList.remove("megaShake"); }, 420);
+
+  for (var i = 0; i < path.length - 1; i++) {
+    var a = path[i];
+    var b = path[i + 1];
+    var ar = Number(a.dataset.row);
+    var ac = Number(a.dataset.col);
+    var br = Number(b.dataset.row);
+    var bc = Number(b.dataset.col);
+    var dr = Math.sign(br - ar);
+    var dc = Math.sign(bc - ac);
+    addLineFlashThrough(ar, ac, dr, dc);
+  }
+
+  if (path.length >= 3) {
+    var wave = document.createElement("div");
+    wave.className = "shockwave";
+    wrap.appendChild(wave);
+    setTimeout(function () { wave.remove(); }, 700);
+  }
+
+  floatText((path.length >= 4 ? "BIG LINE! " : "LINE! ") + "+" + gained, true);
+}
+
+function addLineFlashThrough(r: number, c: number, dr: number, dc: number): void {
+  if (dr === 0 && dc === 0) return;
+
+  var s = tileSize();
+  var cells: CellPoint[] = [];
+
+  var sr = r;
+  var sc = c;
+  while (sr - dr >= 0 && sr - dr < SIZE && sc - dc >= 0 && sc - dc < SIZE) {
+    sr -= dr;
+    sc -= dc;
+  }
+  while (sr >= 0 && sr < SIZE && sc >= 0 && sc < SIZE) {
+    cells.push({ r: sr, c: sc });
+    sr += dr;
+    sc += dc;
+  }
+  if (!cells.length) return;
+
+  var first = cells[0];
+  var last = cells[cells.length - 1];
+  var p1 = pos(first.r, first.c);
+  var p2 = pos(last.r, last.c);
+  var x1 = 10 + p1.left + s / 2;
+  var y1 = 10 + p1.top + s / 2;
+  var x2 = 10 + p2.left + s / 2;
+  var y2 = 10 + p2.top + s / 2;
+  var length = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) + s;
+  var angle = Math.atan2(y2 - y1, x2 - x1);
+
+  var flash = document.createElement("div");
+  flash.className = "lineFlash";
+  flash.style.width = length + "px";
+  flash.style.height = Math.max(12, s * .22) + "px";
+  flash.style.left = ((x1 + x2) / 2 - length / 2) + "px";
+  flash.style.top = ((y1 + y2) / 2 - Math.max(12, s * .22) / 2) + "px";
+  flash.style.setProperty("--angle", angle + "rad");
+  wrap.appendChild(flash);
+  setTimeout(function () { flash.remove(); }, 680);
+}
+
+function rainbowEffects(gained: number): void {
+  var rb = document.createElement("div");
+  rb.className = "rainbowBurst";
+  wrap.appendChild(rb);
+  setTimeout(function () { rb.remove(); }, 920);
+
+  floatText("RAINBOW BONUS! +" + gained, true);
+
+  // レインボーボーナス本体:
+  // 5秒間、時間停止・操作不可・虹色演出。その後30秒追加。
+  bonusLocked = true;
+  timePaused = true;
+
+  var overlay = document.createElement("div");
+  overlay.className = "rainbowTimeBonus";
+
+  var text = document.createElement("div");
+  text.className = "rainbowTimeBonusText";
+  text.innerHTML = "RAINBOW BONUS<br>TIME +30";
+  overlay.appendChild(text);
+  wrap.appendChild(overlay);
+
+  messageEl.textContent = "レインボーボーナス！時間停止中...";
+
+  setTimeout(function () {
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    timeLeft += 30;
+    timeEl.textContent = String(timeLeft);
+    timePaused = false;
+    bonusLocked = false;
+    if (playing) messageEl.textContent = "時間 +30秒！ 再開！";
+    floatText("+30s", true);
+  }, 5000);
+}
+
+function directionalCellsFromPath(path: GameTile[]): CellPoint[] {
+  // ★同士を繋いだ「方向」のライン全体を、その色の普通ピースにする。
+  // 横なら行全体、縦なら列全体、斜めなら盤面端から端までの斜めライン。
+  // 曲げて繋いだ場合は、各線分ごとにラインを作る。
+  var cells: CellPoint[] = [];
+  if (path.length < 2) return cells;
+
+  function addCell(r: number, c: number): void {
+    if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
+    if (!cells.some(function (cell) { return cell.r === r && cell.c === c; })) {
+      cells.push({ r: r, c: c });
+    }
+  }
+
+  function addFullLineThrough(r: number, c: number, dr: number, dc: number): void {
+    if (dr === 0 && dc === 0) return;
+
+    // まず反対方向に盤面端まで戻る
+    var sr = r;
+    var sc = c;
+    while (sr - dr >= 0 && sr - dr < SIZE && sc - dc >= 0 && sc - dc < SIZE) {
+      sr -= dr;
+      sc -= dc;
+    }
+
+    // そこから正方向に端まで塗る
+    while (sr >= 0 && sr < SIZE && sc >= 0 && sc < SIZE) {
+      addCell(sr, sc);
+      sr += dr;
+      sc += dc;
+    }
+  }
+
+  for (var i = 0; i < path.length - 1; i++) {
+    var a = path[i];
+    var b = path[i + 1];
+    var ar = Number(a.dataset.row);
+    var ac = Number(a.dataset.col);
+    var br = Number(b.dataset.row);
+    var bc = Number(b.dataset.col);
+    var dr = Math.sign(br - ar);
+    var dc = Math.sign(bc - ac);
+
+    addFullLineThrough(ar, ac, dr, dc);
+  }
+
+  return cells;
+}
+
+function mixedSpecialTargets(specials: GameTile[]): GameTile[] {
+  var out: GameTile[] = [];
+  var power = specials.length;
+
+  specials.forEach(function (sp) {
+    var r = Number(sp.dataset.row);
+    var c = Number(sp.dataset.col);
+    addArea(out, r, c, Math.min(3, power));
+  });
+
+  if (specials.length >= 3) {
+    specials.forEach(function (sp) {
+      var row = Number(sp.dataset.row);
+      var col = Number(sp.dataset.col);
+      for (var c = 0; c < SIZE; c++) {
+        var rowTile = grid[row][c];
+        if (rowTile) out.push(rowTile);
+      }
+      for (var r = 0; r < SIZE; r++) {
+        var colTile = grid[r][col];
+        if (colTile) out.push(colTile);
+      }
+    });
+  }
+
+  if (specials.length >= 4) {
+    for (var rr = 0; rr < SIZE; rr++) {
+      for (var cc = 0; cc < SIZE; cc++) {
+              var tile = grid[rr][cc];
+              if ((rr + cc) % 2 === 0 && tile) out.push(tile);
+      }
+    }
+  }
+
+  if (specials.length >= 5) {
+    for (var r2 = 0; r2 < SIZE; r2++) {
+      for (var c2 = 0; c2 < SIZE; c2++) {
+              var tile = grid[r2][c2];
+              if (tile) out.push(tile);
+      }
+    }
+  }
+
+  // 異色★ミックスの爆発では、使用した★だけを消費する。
+  // 爆風に巻き込まれただけの他の★は盤面に残す。
+  return uniqueTiles(out).filter(function (tile) {
+    return tile.dataset.type !== "special" || specials.indexOf(tile) !== -1;
+  });
+}
+
+function addArea(out: GameTile[], row: number, col: number, radius: number): void {
+  for (var dr = -radius; dr <= radius; dr++) {
+    for (var dc = -radius; dc <= radius; dc++) {
+      var r = row + dr;
+      var c = col + dc;
+      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
+      var tile = grid[r][c];
+      if (Math.abs(dr) + Math.abs(dc) <= radius + 1 && tile) out.push(tile);
+    }
+  }
+}
+
+function lastNormalInSelection(tiles: GameTile[]): GameTile | null {
+  for (var i = tiles.length - 1; i >= 0; i--) {
+    if (tiles[i] && tiles[i].dataset.type === "normal") return tiles[i];
+  }
+  return null;
+}
+
+function allTilesOfColor(color: number | null): GameTile[] {
+  var out: GameTile[] = [];
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var tile = grid[r][c];
+      // 同じ色を消す系では★は保護する。
+      // ★込み5個以上で色全消ししても、対象は同色の普通ピースだけ。
+      if (
+        tile &&
+        tile.dataset.type === "normal" &&
+        Number(tile.dataset.color) === Number(color)
+      ) {
+        out.push(tile);
+      }
+    }
+  }
+  return out;
+}
+
+function uniqueTiles(arr: Array<GameTile | null>): GameTile[] {
+  var out: GameTile[] = [];
+  arr.forEach(function (tile) {
+    if (tile && out.indexOf(tile) === -1) out.push(tile);
+  });
+  return out;
+}
+
+function vanishDropAndFill(tiles: GameTile[], createSpecialInfo: CreateSpecialInfo, superExplosion: boolean): void {
+  var keepInfo = createSpecialInfo && createSpecialInfo.mode === "keep" ? createSpecialInfo : null;
+
+  tiles.forEach(function (tile) {
+    tile.classList.add(superExplosion ? "superVanish" : "vanish");
+    var r = Number(tile.dataset.row);
+    var c = Number(tile.dataset.col);
+    if (grid[r] && grid[r][c] === tile) grid[r][c] = null;
+  });
+
+  if (keepInfo) {
+    var keepTile = keepInfo.tile;
+    // 消したチェーンの最後の1個をその場で特殊化して残す。
+    // これにより、落下後の同座標へ書き戻して既存特殊を上書きするバグを避ける。
+    keepTile.classList.remove("selected");
+    keepTile.dataset.color = String(keepInfo.color);
+    keepTile.dataset.type = "special";
+    applyClass(keepTile);
+    keepTile.classList.add("spawn");
+  }
+
+  selected = [];
+  selectedColor = null;
+  chainMode = null;
+  updateLine();
+  chainEl.textContent = "0";
+  disarmSpecial();
+
+  setTimeout(function () {
+    tiles.forEach(function (tile) {
+      if (tile.parentNode) tile.parentNode.removeChild(tile);
+    });
+
+    applyGravityAndSpawn(createSpecialInfo);
+
+    setTimeout(function () {
+      resolving = false;
+      removeSpawnMarks();
+      ensurePlayable(false);
+      if (playing) messageEl.textContent = "★で移動・色全消し・横列★化を狙え！";
+    }, 310);
+  }, superExplosion ? 390 : 230);
+}
+
+function applyGravityAndSpawn(createSpecialInfo: CreateSpecialInfo): void {
+  for (var c = 0; c < SIZE; c++) {
+    var stack = [];
+    for (var r = SIZE - 1; r >= 0; r--) {
+      if (grid[r][c]) stack.push(grid[r][c]);
+    }
+    for (var row = SIZE - 1; row >= 0; row--) {
+      var tile = stack.shift();
+      if (tile) {
+        grid[row][c] = tile;
+        moveTile(tile, row, c);
+      } else {
+        grid[row][c] = makeTile(row, c, randColor(), true, "normal");
+      }
+    }
+  }
+
+  if (createSpecialInfo && createSpecialInfo.mode === "normalCells") {
+    createNormalCells(
+      createSpecialInfo.cells,
+      createSpecialInfo.color,
+      createSpecialInfo.usedSpecials || []
+    );
+  }
+}
+
+function createNormalCells(cells: CellPoint[], color: number, usedSpecials: GameTile[]): void {
+  usedSpecials = usedSpecials || [];
+  cells.forEach(function (cell) {
+    var row = cell.r;
+    var c = cell.c;
+    if (row < 0 || row >= SIZE || c < 0 || c >= SIZE) return;
+
+    var tile = grid[row][c];
+    if (!tile) {
+      tile = makeTile(row, c, color, false, "normal");
+      grid[row][c] = tile;
+    } else {
+      tile.dataset.color = String(color);
+
+      // 同色★ライン生成で「使用した★」は消費して普通ピースへ戻す。
+      // ただし、ラインに巻き込まれただけの未使用★は★のまま色だけ変える。
+      if (tile.dataset.type !== "special" || usedSpecials.indexOf(tile) !== -1) {
+        tile.dataset.type = "normal";
+      }
+
+      applyClass(tile);
+      tile.classList.add("spawn");
+    }
+  });
+}
+
+function megaEffects(count: number, gained: number): void {
+  wrap.classList.add("megaShake");
+  setTimeout(function () { wrap.classList.remove("megaShake"); }, 540);
+
+  var flash = document.createElement("div");
+  flash.className = "flash";
+  wrap.appendChild(flash);
+  setTimeout(function () { flash.remove(); }, 620);
+
+  var wave = document.createElement("div");
+  wave.className = "shockwave";
+  wrap.appendChild(wave);
+  setTimeout(function () { wave.remove(); }, 700);
+
+  floatText((count >= 3 ? "SPECIAL!! " : "GOOD!! ") + "+" + gained, true);
+}
+
+function hasAnyMove(): boolean {
+  if (findSpecialMove().length >= 2) return true;
+  return findColorMove().length >= 3;
+}
+
+function findMove(): GameTile[] {
+  var specials = findSpecialMove();
+  if (specials.length >= 2) return specials;
+  return findColorMove();
+}
+
+function findSpecialMove(): GameTile[] {
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var start = grid[r][c];
+      if (!isSpecial(start)) continue;
+      var path = longestSpecialPathFrom(start, []);
+      if (path.length >= 2) return path;
+    }
+  }
+  return [];
+}
+
+function longestSpecialPathFrom(tile: GameTile, path: GameTile[]): GameTile[] {
+  var best = path.concat([tile]);
+  var r = Number(tile.dataset.row);
+  var c = Number(tile.dataset.col);
+  for (var dr = -1; dr <= 1; dr++) {
+    for (var dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      var nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+      var next = grid[nr][nc];
+      if (!isSpecial(next)) continue;
+      if (path.indexOf(next) !== -1) continue;
+      var candidate = longestSpecialPathFrom(next, best);
+      if (candidate.length > best.length) best = candidate;
+      if (best.length >= 5) return best;
+    }
+  }
+  return best;
+}
+
+function findColorMove(): GameTile[] {
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var start = grid[r][c];
+      if (!start) continue;
+      var color = Number(start.dataset.color);
+      var path = longestColorPathFrom(start, color, []);
+      if (path.length >= 3) return path;
+    }
+  }
+  return [];
+}
+
+function longestColorPathFrom(tile: GameTile, color: number, path: GameTile[]): GameTile[] {
+  var best = path.concat([tile]);
+  var r = Number(tile.dataset.row);
+  var c = Number(tile.dataset.col);
+
+  for (var dr = -1; dr <= 1; dr++) {
+    for (var dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      var nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+      var next = grid[nr][nc];
+      if (!next) continue;
+      if (Number(next.dataset.color) !== color) continue;
+      if (path.indexOf(next) !== -1) continue;
+      var candidate = longestColorPathFrom(next, color, best);
+      if (candidate.length > best.length) best = candidate;
+      if (best.length >= 5) return best;
+    }
+  }
+  return best;
+}
+
+function ensurePlayable(initial: boolean): void {
+  var tries = 0;
+  while (!hasAnyMove() && tries < 20) {
+    randomizeBoard();
+    tries++;
+  }
+  if (tries > 0 && !initial) {
+    wrap.classList.add("shake");
+    messageEl.textContent = "手がないのでシャッフル！";
+    setTimeout(function () { wrap.classList.remove("shake"); }, 280);
+  }
+}
+
+function randomizeBoard(): void {
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var tile = grid[r][c];
+      if (!tile) continue;
+      tile.dataset.color = String(randColor());
+      tile.dataset.type = "normal";
+      applyClass(tile);
+    }
+  }
+  var rr = Math.floor(Math.random() * SIZE);
+  var cc = Math.floor(Math.random() * (SIZE - 2));
+  var color = randColor();
+  for (var i = 0; i < 3; i++) {
+    var t = grid[rr][cc + i];
+    if (!t) continue;
+    t.dataset.color = String(color);
+    t.dataset.type = "normal";
+    applyClass(t);
+  }
+}
+
+function showHint(): void {
+  if (!playing || resolving) {
+    messageEl.textContent = "スタート後に使えるよ";
+    return;
+  }
+  clearHint();
+  var move = findMove();
+  if (move.length < 2) {
+    ensurePlayable(false);
+    return;
+  }
+  move.slice(0, Math.min(move.length, 5)).forEach(function (tile) {
+    tile.classList.add("hint");
+  });
+  if (move.length >= 2 && move.every(isSpecial)) {
+    messageEl.textContent = "★チェーン発見！同色なら方向ライン生成、異色なら大量破壊";
+  } else {
+    messageEl.textContent = "ここを狙える！★を含めて5個なら色全消し";
+  }
+  setTimeout(clearHint, 1000);
+}
+
+function clearHint(): void {
+  board.querySelectorAll(".hint").forEach(function (tile) {
+    tile.classList.remove("hint");
+  });
+}
+
+function removeSpawnMarks(): void {
+  board.querySelectorAll(".spawn").forEach(function (tile) {
+    tile.classList.remove("spawn");
+  });
+}
+
+function clearSelection(): void {
+  selected.forEach(function (tile) {
+    if (tile && tile.classList) tile.classList.remove("selected");
+  });
+  selected = [];
+  selectedColor = null;
+  chainMode = null;
+  updateLine();
+  chainEl.textContent = "0";
+}
+
+function centerOf(tile: GameTile): Point {
+  var a = tile.getBoundingClientRect();
+  var b = wrap.getBoundingClientRect();
+  return {
+    x: a.left + a.width / 2 - b.left - 10,
+    y: a.top + a.height / 2 - b.top - 10
+  };
+}
+
+function updateLine(): void {
+  svg.innerHTML = "";
+  if (selected.length < 2) return;
+  var points = selected.map(function (tile) {
+    var p = centerOf(tile);
+    return p.x + "," + p.y;
+  }).join(" ");
+  var poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  poly.setAttribute("points", points);
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", chainMode === "special" ? "rgba(255, 238, 106, .96)" : "rgba(255,255,255,.85)");
+  poly.setAttribute("stroke-width", chainMode === "special" ? "11" : "8");
+  poly.setAttribute("stroke-linecap", "round");
+  poly.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(poly);
+}
+
+function floatText(text: string, mega: boolean): void {
+  var f = document.createElement("div");
+  f.className = "float" + (mega ? " megaText" : "");
+  f.textContent = text;
+  wrap.appendChild(f);
+  setTimeout(function () { f.remove(); }, mega ? 980 : 850);
+}
+
+function resizeBoard(): void {
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      var tile = grid[r] ? grid[r][c] : null;
+      if (tile) moveTile(tile, r, c);
+    }
+  }
+  updateLine();
+}
+
+startBtn.addEventListener("click", startGame);
+hintBtn.addEventListener("click", showHint);
+
+wrap.addEventListener("mousedown", pointerStart);
+window.addEventListener("mousemove", pointerMove);
+window.addEventListener("mouseup", pointerEnd);
+
+wrap.addEventListener("touchstart", pointerStart, { passive: false });
+window.addEventListener("touchmove", pointerMove, { passive: false });
+window.addEventListener("touchend", pointerEnd, { passive: false });
+window.addEventListener("resize", resizeBoard);
+
+buildBoard();
+};
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initNazotteConnect, { once: true });
+} else {
+  initNazotteConnect();
+}
+
+export {};
