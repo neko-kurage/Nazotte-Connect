@@ -744,15 +744,16 @@ function releaseChain(): void {
         superExplosion = true;
       }
     } else {
-      if (n >= 5 && specials.length > 0) {
-        // ★を含めて5個以上消した場合:
-        // その色の普通ピースを全消ししつつ、新しい★も生成する。
-        // 既存★は保護。新★はチェーン内の最後の普通ピースを残して★化する。
+      if (n >= 3 && specials.length > 0) {
+        // ★を含めて3個以上消した場合:
+        // その色の普通ピースを全消しする。
+        // ★生成は従来どおり4個+★以上の時だけ行う。
+        var createsSpecialFromColorClear = n >= 5;
         var colorToClear = selectedColor;
         var keeper = lastNormalInSelection(selected);
         var colorClearTargets = allTilesOfColor(colorToClear);
 
-        if (keeper) {
+        if (createsSpecialFromColorClear && keeper) {
           colorClearTargets = colorClearTargets.filter(function (t) { return t !== keeper; });
           targets = uniqueTiles(targets.concat(colorClearTargets)).filter(function (t) { return t !== keeper; });
           createSpecialInfo = { mode: "keep", tile: keeper, color: selectedColor };
@@ -768,7 +769,9 @@ function releaseChain(): void {
         gained = btbInfo.points;
         score += gained;
         scoreEl.textContent = String(score);
-        messageEl.textContent = "★込み5個以上！ 色全消し＋★生成 +" + gained + btbText(btbInfo);
+        messageEl.textContent = createsSpecialFromColorClear
+          ? "★込み5個以上！ 色全消し＋★生成 +" + gained + btbText(btbInfo)
+          : "★込み3個以上！ 色全消し +" + gained + btbText(btbInfo);
         playSound("removeBomb");
         megaEffects(2 + specials.length, gained);
         showBtbFloat(btbInfo);
@@ -1381,7 +1384,7 @@ function chainLineStyle(): ChainLineStyle {
 
   if (isSpecialChain && uniqueColorCount(specials) >= COLORS) return "rainbow";
 
-  if (isSpecialChain || (chainMode === "color" && selected.length >= 5 && specials.length > 0)) {
+  if (isSpecialChain || (chainMode === "color" && selected.length >= 3 && specials.length > 0)) {
     return "specialEffect";
   }
 
