@@ -1,5 +1,6 @@
 type TileKind = "normal" | "special";
 type ChainMode = "color" | "special";
+type ChainLineStyle = "normal" | "rainbow" | "specialCreate" | "specialEffect";
 type GameTile = HTMLDivElement;
 type BoardCell = GameTile | null;
 type Point = { x: number; y: number };
@@ -496,6 +497,17 @@ function calcRenBonus(clearCount: number, color: number | null): RenInfo {
     makeSpecial: renStreak > 0 && renStreak % 5 === 0,
     color: color
   };
+}
+
+/**
+ * 現在のREN状態で次の通常消しが★生成に届くかを返す。
+ *
+ * @param clearCount 今回消す予定の通常ブロック数。
+ * @return 次の通常消しでREN由来の★生成が起きる場合は true。
+ */
+function willCreateRenSpecial(clearCount: number): boolean {
+  var nextStreak = lastRenCount === clearCount ? renStreak + 1 : 1;
+  return nextStreak > 0 && nextStreak % 5 === 0;
 }
 
 function renTargetAt10(clearCount: number): number {
@@ -1276,6 +1288,67 @@ function centerOf(tile: GameTile): Point {
   };
 }
 
+/**
+ * 現在のチェーン内容から線の演出種別を返す。
+ *
+ * @return 優先順位を反映したチェイン線の種類。
+ */
+function chainLineStyle(): ChainLineStyle {
+  if (selected.length < 2) return "normal";
+
+  var specials = selected.filter(isSpecial);
+  var isSpecialChain = chainMode === "special" && selected.length >= 2;
+
+  if (isSpecialChain && uniqueColorCount(specials) >= COLORS) return "rainbow";
+
+  if (
+    chainMode === "color" &&
+    selected.length >= 3 &&
+    (selected.length >= 5 || (specials.length === 0 && willCreateRenSpecial(selected.length)))
+  ) {
+    return "specialCreate";
+  }
+
+  if (isSpecialChain || (chainMode === "color" && selected.length >= 5 && specials.length > 0)) {
+    return "specialEffect";
+  }
+
+  return "normal";
+}
+
+/**
+ * レインボー用のSVGグラデーション定義を追加する。
+ *
+ * @return stroke 属性で参照するグラデーションURL。
+ */
+function appendRainbowLineGradient(): string {
+  var defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  var gradient = document.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+  gradient.setAttribute("id", "chainLineRainbow");
+  gradient.setAttribute("x1", "0%");
+  gradient.setAttribute("y1", "0%");
+  gradient.setAttribute("x2", "100%");
+  gradient.setAttribute("y2", "0%");
+
+  [
+    ["0%", "#ff4f7b"],
+    ["20%", "#ffd84f"],
+    ["40%", "#63ff7a"],
+    ["60%", "#50d8ff"],
+    ["80%", "#bd78ff"],
+    ["100%", "#ff4f7b"]
+  ].forEach(function (stopInfo) {
+    var stop = document.createElementNS("http://www.w3.org/2000/svg", "stop");
+    stop.setAttribute("offset", stopInfo[0]);
+    stop.setAttribute("stop-color", stopInfo[1]);
+    gradient.appendChild(stop);
+  });
+
+  defs.appendChild(gradient);
+  svg.appendChild(defs);
+  return "url(#chainLineRainbow)";
+}
+
 function updateLine(): void {
   svg.innerHTML = "";
   if (selected.length < 2) return;
@@ -1284,13 +1357,27 @@ function updateLine(): void {
     return p.x + "," + p.y;
   }).join(" ");
   var poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  var lineStyle = chainLineStyle();
   poly.setAttribute("points", points);
   poly.setAttribute("fill", "none");
-  poly.setAttribute("stroke", chainMode === "special" ? "rgba(255, 238, 106, .96)" : "rgba(255,255,255,.85)");
-  poly.setAttribute("stroke-width", chainMode === "special" ? "11" : "8");
+  poly.setAttribute("stroke", lineStyle === "rainbow" ? appendRainbowLineGradient() : chainLineStroke(lineStyle));
+  poly.setAttribute("stroke-width", lineStyle === "normal" ? (chainMode === "special" ? "11" : "8") : "12");
   poly.setAttribute("stroke-linecap", "round");
   poly.setAttribute("stroke-linejoin", "round");
+  poly.classList.add("chainLine", "chainLine-" + lineStyle);
   svg.appendChild(poly);
+}
+
+/**
+ * チェイン線の種類に対応する単色 stroke を返す。
+ *
+ * @param lineStyle チェイン線の種類。
+ * @return SVG stroke 属性に指定する色。
+ */
+function chainLineStroke(lineStyle: ChainLineStyle): string {
+  if (lineStyle === "specialCreate") return "rgba(255, 154, 39, .98)";
+  if (lineStyle === "specialEffect") return "rgba(173, 235, 255, .98)";
+  return chainMode === "special" ? "rgba(255, 238, 106, .96)" : "rgba(255,255,255,.85)";
 }
 
 function floatText(text: string, mega: boolean): void {
