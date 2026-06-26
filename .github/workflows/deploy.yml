@@ -54,6 +54,12 @@ jobs:
             exit 0
           fi
 
+          playable_version_tags="$(
+            printf '%s\n' "$version_tags" |
+              awk -F'[v.]' '{ key = $2 "." $3; latest[key] = $0 } END { for (key in latest) print latest[key] }' |
+              sort -V
+          )"
+
           while IFS= read -r version_tag; do
             echo "::group::Build ${version_tag}"
             git reset --hard
@@ -68,7 +74,7 @@ jobs:
             mkdir -p "${version_dist_root}/${version_tag}"
             cp -a "dist/." "${version_dist_root}/${version_tag}/"
             echo "::endgroup::"
-          done <<< "$version_tags"
+          done <<< "$playable_version_tags"
 
           git reset --hard
           git checkout --detach "$current_ref"
@@ -79,7 +85,7 @@ jobs:
           while IFS= read -r version_tag; do
             mkdir -p "${latest_dist}/${version_tag}"
             cp -a "${version_dist_root}/${version_tag}/." "${latest_dist}/${version_tag}/"
-          done <<< "$version_tags"
+          done <<< "$playable_version_tags"
         env:
           ASTRO_TELEMETRY_DISABLED: 1
 

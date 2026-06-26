@@ -20,6 +20,14 @@ type BtbInfo = { active: boolean; points: number };
 type KeepSpecialInfo = { mode: "keep"; tile: GameTile; color: number | null };
 type NormalCellsInfo = { mode: "normalCells"; cells: CellPoint[]; color: number; usedSpecials: GameTile[] };
 type CreateSpecialInfo = KeepSpecialInfo | NormalCellsInfo | null;
+type SoundChannel = {
+  /** 同じ効果音を重ねるためのAudio要素プール。 */
+  players: HTMLAudioElement[];
+  /** 次に使う候補位置。 */
+  nextIndex: number;
+  /** 直近に鳴らした時刻。 */
+  lastPlayedAt: number;
+};
 
 const requiredElement = <T extends Element>(id: string, expected: { new (...args: unknown[]): T }): T => {
   const element = document.getElementById(id);
@@ -61,17 +69,6 @@ const soundToggleBtn = requiredElement("soundToggle", HTMLButtonElement);
 const messageEl = requiredElement("message", HTMLParagraphElement);
 const soundMuteIcon = requiredElement("soundIconMute", HTMLImageElement);
 const soundMaxIcon = requiredElement("soundIconMax", HTMLImageElement);
-const sounds: Record<SoundKey, HTMLAudioElement> = {
-  start: new Audio(soundUrls.start),
-  trace: new Audio(soundUrls.trace),
-  rainbow: new Audio(soundUrls.rainbow),
-  effectiveGenerate: new Audio(soundUrls.effectiveGenerate),
-  effectiveChain: new Audio(soundUrls.effectiveChain),
-  removeNormal: new Audio(soundUrls.removeNormal),
-  removeBomb: new Audio(soundUrls.removeBomb),
-  removeReplace: new Audio(soundUrls.removeReplace),
-  timeUp: new Audio(soundUrls.timeUp)
-};
 
 let grid: BoardCell[][] = [];
 let selected: GameTile[] = [];
@@ -97,8 +94,98 @@ let startPoint: Point | null = null;
 let pointerMoved = false;
 let currentChainLineStyle: ChainLineStyle | null = null;
 let soundMuted = true;
+const soundChannels: Record<SoundKey, SoundChannel> = {
+  start: createSoundChannel("start"),
+  trace: createSoundChannel("trace"),
+  rainbow: createSoundChannel("rainbow"),
+  effectiveGenerate: createSoundChannel("effectiveGenerate"),
+  effectiveChain: createSoundChannel("effectiveChain"),
+  removeNormal: createSoundChannel("removeNormal"),
+  removeBomb: createSoundChannel("removeBomb"),
+  removeReplace: createSoundChannel("removeReplace"),
+  timeUp: createSoundChannel("timeUp")
+};
 const LONG_PRESS_MS = 260;
 const SLIDE_START_PX = 12;
+const REN_SCORE_STEP_CAP = 10;
+const soundPoolLimits: Record<SoundKey, number> = {
+  start: 1,
+  trace: 4,
+  rainbow: 2,
+  effectiveGenerate: 2,
+  effectiveChain: 2,
+  removeNormal: 3,
+  removeBomb: 3,
+  removeReplace: 3,
+  timeUp: 1
+};
+const soundCooldownMs: Record<SoundKey, number> = {
+  start: 0,
+  trace: 34,
+  rainbow: 90,
+  effectiveGenerate: 150,
+  effectiveChain: 150,
+  removeNormal: 45,
+  removeBomb: 45,
+  removeReplace: 45,
+  timeUp: 0
+};
+
+/**
+ * 効果音再生用のAudio要素を作成する。
+ *
+ * @param key 効果音の種類。
+ * @return 初期化済みのAudio要素。
+ */
+function createSoundPlayer(key: SoundKey): HTMLAudioElement {
+  var player = new Audio(soundUrls[key]);
+  player.preload = "metadata";
+  player.muted = soundMuted;
+  return player;
+}
+
+/**
+ * 効果音ごとの再生状態を作成する。
+ *
+ * @param key 効果音の種類。
+ * @return 再生プールを持つチャンネル。
+ */
+function createSoundChannel(key: SoundKey): SoundChannel {
+  return {
+    players: [createSoundPlayer(key)],
+    nextIndex: 0,
+    lastPlayedAt: -Infinity
+  };
+}
+
+/**
+ * 再利用できるAudio要素を探し、必要ならプールを上限まで増やす。
+ *
+ * @param key 効果音の種類。
+ * @return 今回の再生に使うAudio要素。上限まで埋まっている場合は null。
+ */
+function takeSoundPlayer(key: SoundKey): HTMLAudioElement | null {
+  var channel = soundChannels[key];
+  var players = channel.players;
+
+  for (var i = 0; i < players.length; i++) {
+    var index = (channel.nextIndex + i) % players.length;
+    var player = players[index];
+    if (player.paused || player.ended) {
+      channel.nextIndex = (index + 1) % players.length;
+      return player;
+    }
+  }
+
+  if (players.length < soundPoolLimits[key]) {
+    var player = createSoundPlayer(key);
+    players.push(player);
+    channel.nextIndex = players.length % soundPoolLimits[key];
+    return player;
+  }
+
+  return null;
+}
 
 /**
  * 指定した効果音を先頭から再生する。
@@ -107,7 +194,13 @@ const SLIDE_START_PX = 12;
  */
 function playSound(key: SoundKey): void {
   if (soundMuted) return;
-  var sound = sounds[key];
+  var channel = soundChannels[key];
+  var now = performance.now();
+  if (now - channel.lastPlayedAt < soundCooldownMs[key]) return;
+
+  var sound = takeSoundPlayer(key);
+  if (!sound) return;
+  channel.lastPlayedAt = now;
   sound.currentTime = 0;
   void sound.play().catch(function () {
     // ブラウザの自動再生制限で失敗した場合は、操作を妨げずに無音で続行する。
@@ -121,8 +214,11 @@ function playSound(key: SoundKey): void {
  */
 function setSoundMuted(muted: boolean): void {
   soundMuted = muted;
-  Object.values(sounds).forEach(function (sound) {
-    sound.muted = muted;
+  Object.values(soundChannels).forEach(function (channel) {
+    channel.players.forEach(function (sound) {
+      sound.muted = muted;
+      if (!muted) sound.load();
+    });
   });
   soundToggleBtn.setAttribute("aria-pressed", String(!muted));
   soundToggleBtn.setAttribute("aria-label", muted ? "音を出す" : "音を消す");
@@ -599,8 +695,16 @@ function willCreateRenSpecial(clearCount: number): boolean {
   return nextStreak > 0 && nextStreak % 5 === 0;
 }
 
+/**
+ * REN 1回ぶんの加点を返す。
+ *
+ * @param clearCount 今回消した通常ブロック数。
+ * @param streak 現在のREN数。表示や★生成判定では上限を設けない。
+ * @return 11REN以降は10REN時と同じ点数を加算する。
+ */
 function renStepBonus(clearCount: number, streak: number): number {
-  return clearCount * 100 * Math.min(streak, 10);
+  var scoreStep = Math.min(streak, REN_SCORE_STEP_CAP);
+  return clearCount * 100 * scoreStep;
 }
 
 function renText(info: RenInfo | null): string {
