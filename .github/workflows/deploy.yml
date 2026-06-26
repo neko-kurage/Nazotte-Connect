@@ -3,6 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -16,9 +17,63 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
 
-      - name: Install, build, and upload site
-        uses: withastro/action@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build latest site
+        run: npm run build
+        env:
+          ASTRO_TELEMETRY_DISABLED: 1
+
+      - name: Build tagged versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_dist="$PWD/dist"
+          worktree_root="$RUNNER_TEMP/nazotte-connect-version-worktrees"
+          mkdir -p "$worktree_root"
+
+          mapfile -t version_tags < <(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname)
+          if [ "${#version_tags[@]}" -eq 0 ]; then
+            echo "No version tags found."
+            exit 0
+          fi
+
+          for version_tag in "${version_tags[@]}"; do
+            echo "::group::Build ${version_tag}"
+            version_dir="${worktree_root}/${version_tag}"
+
+            git worktree add --detach "$version_dir" "$version_tag"
+            (
+              cd "$version_dir"
+              npm ci
+              NAZOTTE_CONNECT_VERSION_PATH="$version_tag" npm run build
+            )
+
+            rm -rf "${latest_dist:?}/${version_tag}"
+            mkdir -p "${latest_dist}/${version_tag}"
+            cp -a "$version_dir/dist/." "${latest_dist}/${version_tag}/"
+            git worktree remove --force "$version_dir"
+            echo "::endgroup::"
+          done
+        env:
+          ASTRO_TELEMETRY_DISABLED: 1
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: dist
 
   deploy:
     needs: build
