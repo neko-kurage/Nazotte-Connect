@@ -655,6 +655,17 @@ function showBtbFloat(info: BtbInfo | null): void {
   if (info && info.active) floatText("BTB x2!", true);
 }
 
+/**
+ * 残り時間を加算し、HUDへ反映する。
+ *
+ * @param seconds 追加する秒数。
+ */
+function addTimeBonus(seconds: number): void {
+  if (seconds <= 0) return;
+  timeLeft += seconds;
+  timeEl.textContent = String(timeLeft);
+}
+
 function applyRenSpecialIfNeeded(info: RenInfo | null, currentInfo: CreateSpecialInfo, targets: GameTile[]): CreateSpecialInfo {
   if (!info || !info.makeSpecial) return currentInfo;
   if (currentInfo) return currentInfo;
@@ -702,7 +713,9 @@ function releaseChain(): void {
         gained = btbInfo.points;
         score += gained;
         scoreEl.textContent = String(score);
-        messageEl.textContent = "同色★" + specials.length + "連結！ ライン生成 +" + gained + btbText(btbInfo);
+        var sameColorTimeBonus = (specials.length - 1) * 5;
+        addTimeBonus(sameColorTimeBonus);
+        messageEl.textContent = "同色★" + specials.length + "連結！ ライン生成 +" + gained + " / +" + sameColorTimeBonus + "秒" + btbText(btbInfo);
         playSound("removeReplace");
         linePaintEffects(specials, gained);
         showBtbFloat(btbInfo);
@@ -736,7 +749,9 @@ function releaseChain(): void {
           megaEffects(specials.length + 2, gained);
           rainbowEffects(gained);
         } else {
-          messageEl.textContent = "異色★ミックス！ 大量破壊 +" + gained + btbText(btbInfo);
+          var mixedColorTimeBonus = colorCount * 3;
+          addTimeBonus(mixedColorTimeBonus);
+          messageEl.textContent = "異色★ミックス！ 大量破壊 +" + gained + " / +" + mixedColorTimeBonus + "秒" + btbText(btbInfo);
           playSound("removeBomb");
           megaEffects(specials.length, gained);
         }
