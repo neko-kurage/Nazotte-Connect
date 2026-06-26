@@ -583,48 +583,8 @@ function willCreateRenSpecial(clearCount: number): boolean {
   return nextStreak > 0 && nextStreak % 5 === 0;
 }
 
-function renTargetAt10(clearCount: number): number {
-  // 「10RENに到達した時点の合計得点」の目安。
-  // RENは強いが、特殊技を食わない中得点に抑える。
-  // 3個=約5,000 / 4個=約9,000 / 5個=約14,000 / 6個=約19,000 ...
-  if (clearCount <= 3) return 5000;
-  if (clearCount === 4) return 9000;
-  return 9000 + (clearCount - 4) * 5000;
-}
-
-function estimatedNormalBaseTotalAt10(clearCount: number): number {
-  // 通常消し10回ぶんの基礎点の概算。
-  // RENボーナスだけでなく、基礎点込みの合計が目安に近づくように差し引く。
-  return clearCount * clearCount * 14 * 10 + 45 * 55;
-}
-
-function renCumulativeBonusTarget(clearCount: number, streak: number): number {
-  if (streak < 2) return 0;
-
-  var targetBonusAt10 = Math.max(0, renTargetAt10(clearCount) - estimatedNormalBaseTotalAt10(clearCount));
-
-  if (streak <= 5) {
-    // 1〜5RENは気持ちよく伸びる。
-    var earlyProgress = (streak - 1) / 4;
-    return Math.round(targetBonusAt10 * 0.58 * Math.pow(earlyProgress, 1.55));
-  }
-
-  if (streak <= 10) {
-    // 6〜10RENは伸びるが控えめ。10RENで目標累計に到達。
-    var lateProgress = (streak - 5) / 5;
-    return Math.round(targetBonusAt10 * (0.58 + 0.42 * Math.pow(lateProgress, 1.75)));
-  }
-
-  // 10REN以降はかなり控えめ。継続は嬉しいが、特殊技の価値を超えにくくする。
-  var extra = streak - 10;
-  return Math.round(targetBonusAt10 * (1 + 0.08 * Math.sqrt(extra)));
-}
-
 function renStepBonus(clearCount: number, streak: number): number {
-  return Math.max(
-    0,
-    renCumulativeBonusTarget(clearCount, streak) - renCumulativeBonusTarget(clearCount, streak - 1)
-  );
+  return clearCount * 100 * Math.min(streak, 10);
 }
 
 function renText(info: RenInfo | null): string {
