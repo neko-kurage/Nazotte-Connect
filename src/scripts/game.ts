@@ -2,6 +2,7 @@ type TileKind = "normal" | "special";
 type ChainMode = "color" | "special";
 type ChainLineStyle = "normal" | "rainbow" | "specialCreate" | "specialEffect";
 type SoundKey =
+  | "start"
   | "trace"
   | "rainbow"
   | "effectiveGenerate"
@@ -33,6 +34,7 @@ const isGameTile = (element: Element | null): element is GameTile => {
 };
 
 const soundUrls: Record<SoundKey, string> = {
+  start: new URL("../../resources/sound/se/start.mp3", import.meta.url).href,
   trace: new URL("../../resources/sound/se/trace.mp3", import.meta.url).href,
   rainbow: new URL("../../resources/sound/se/rainbow.mp3", import.meta.url).href,
   effectiveGenerate: new URL("../../resources/sound/se/effective_generate.mp3", import.meta.url).href,
@@ -60,6 +62,7 @@ const messageEl = requiredElement("message", HTMLParagraphElement);
 const soundMuteIcon = requiredElement("soundIconMute", HTMLImageElement);
 const soundMaxIcon = requiredElement("soundIconMax", HTMLImageElement);
 const sounds: Record<SoundKey, HTMLAudioElement> = {
+  start: new Audio(soundUrls.start),
   trace: new Audio(soundUrls.trace),
   rainbow: new Audio(soundUrls.rainbow),
   effectiveGenerate: new Audio(soundUrls.effectiveGenerate),
@@ -187,6 +190,7 @@ function buildBoard(): void {
 }
 
 function startGame(): void {
+  playSound("start");
   score = 0;
   timeLeft = 75;
   combo = 0;
@@ -206,7 +210,8 @@ function startGame(): void {
   timeEl.textContent = String(timeLeft);
   chainEl.textContent = "0";
   messageEl.textContent = "通常ブロックだけの同数連続消しでREN！★を挟むとRENは切れる。★技連続はBTB x2！";
-  startBtn.disabled = true;
+  startBtn.textContent = "やめる";
+  startBtn.classList.add("isStop");
   buildBoard();
   if (timer !== null) window.clearInterval(timer);
   timer = window.setInterval(function () {
@@ -228,11 +233,18 @@ function endGame(reason: "timeUp" | "normal" = "normal"): void {
   timePaused = false;
   bonusLocked = false;
   btbReady = false;
+  dragging = false;
+  longPressStarted = false;
+  pendingSpecialTile = null;
+  startPoint = null;
+  pointerMoved = false;
+  clearLongPressTimer();
   if (reason === "timeUp") playSound("timeUp");
   if (timer !== null) window.clearInterval(timer);
   clearSelection();
   cancelStarMoveTarget();
-  startBtn.disabled = false;
+  startBtn.textContent = "スタート";
+  startBtn.classList.remove("isStop");
   var rank = judgeRank(score);
   messageEl.textContent = "終了！スコア " + score + " / ランク: " + rank;
 }
@@ -475,6 +487,7 @@ function handleTargetedStarTap(star: GameTile | null): void {
   score += 120;
   scoreEl.textContent = String(score);
   messageEl.textContent = "ピース移動！ 空いた場所から落下";
+  playSound("removeReplace");
   floatText("MOVE +120", false);
 
   setTimeout(function () {
@@ -537,7 +550,10 @@ function addTile(tile: GameTile | null): void {
   if (chainMode === "special") {
     // 特殊チェーンは色に関係なく★同士を繋げられる。
     // 同色だけなら横列を普通ピース化、異色を含むなら大量破壊。
-    if (!isSpecial(tile)) return;
+    if (tile.dataset.type !== "special") {
+      if (selected.length !== 1 || Number(tile.dataset.color) !== selectedColor) return;
+      chainMode = "color";
+    }
   } else {
     // 通常チェーンは同色のみ。特殊も同色なら含められる
     if (Number(tile.dataset.color) !== selectedColor) return;
@@ -720,7 +736,7 @@ function releaseChain(): void {
       }
     } else {
       if (n >= 3 && specials.length > 0) {
-        // ★を含めて3個以上消した場合:
+        // 2個+★以上で消した場合:
         // その色の普通ピースを全消しする。
         // ★生成は従来どおり4個+★以上の時だけ行う。
         var createsSpecialFromColorClear = n >= 5;
@@ -746,7 +762,7 @@ function releaseChain(): void {
         scoreEl.textContent = String(score);
         messageEl.textContent = createsSpecialFromColorClear
           ? "★込み5個以上！ 色全消し＋★生成 +" + gained + btbText(btbInfo)
-          : "★込み3個以上！ 色全消し +" + gained + btbText(btbInfo);
+          : "2個+★！ 色全消し +" + gained + btbText(btbInfo);
         playSound("removeBomb");
         megaEffects(2 + specials.length, gained);
         showBtbFloat(btbInfo);
@@ -1359,16 +1375,16 @@ function chainLineStyle(): ChainLineStyle {
 
   if (isSpecialChain && uniqueColorCount(specials) >= COLORS) return "rainbow";
 
-  if (isSpecialChain || (chainMode === "color" && selected.length >= 3 && specials.length > 0)) {
-    return "specialEffect";
-  }
-
   if (
     chainMode === "color" &&
     selected.length >= 3 &&
     (selected.length >= 5 || (specials.length === 0 && willCreateRenSpecial(selected.length)))
   ) {
     return "specialCreate";
+  }
+
+  if (isSpecialChain || (chainMode === "color" && selected.length >= 3 && specials.length > 0)) {
+    return "specialEffect";
   }
 
   return "normal";
@@ -1477,7 +1493,13 @@ function resizeBoard(): void {
   updateLine();
 }
 
-startBtn.addEventListener("click", startGame);
+startBtn.addEventListener("click", function () {
+  if (playing) {
+    endGame("timeUp");
+    return;
+  }
+  startGame();
+});
 hintBtn.addEventListener("click", showHint);
 soundToggleBtn.addEventListener("click", function () {
   setSoundMuted(!soundMuted);

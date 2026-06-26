@@ -409,6 +409,11 @@
       color: #2a1641;
       text-shadow: 0 1px 0 rgba(255,255,255,.34);
     }
+    .controlButtonPrimary.isStop {
+      background: linear-gradient(rgba(255,255,255,.78), rgba(178,190,205,.86));
+      color: #243145;
+      text-shadow: 0 1px 0 rgba(255,255,255,.24);
+    }
     .controlButtonSecondary {
       background: linear-gradient(rgba(255,255,255,.96), rgba(208,235,255,.92));
       color: #17304f;
@@ -431,7 +436,18 @@
       filter: grayscale(.25);
       box-shadow: inset 0 -3px 0 rgba(0,0,0,.16);
     }
-    .message { min-height: 1.4em; font-weight: 900; font-size: 14px; }
+    .message {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: calc(1.35em * 3);
+      padding: 0 4px;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      font-weight: 900;
+      font-size: 14px;
+      line-height: 1.35;
+    }
     .float {
       position: absolute;
       z-index: 10;
