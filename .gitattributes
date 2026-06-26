@@ -1,0 +1,8 @@
+# Audio files
+*.mp3 filter=lfs diff=lfs merge=lfs -text
+*.wav filter=lfs diff=lfs merge=lfs -text
+*.ogg filter=lfs diff=lfs merge=lfs -text
+*.m4a filter=lfs diff=lfs merge=lfs -text
+
+# Image files
+*.svg filter=lfs diff=lfs merge=lfs -text

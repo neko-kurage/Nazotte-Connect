@@ -1,4 +1,14 @@
+---
+import soundMaxUrl from "../../resources/image/Icon/sound_max.svg";
+import soundMuteUrl from "../../resources/image/Icon/sound_mute.svg";
+---
+
 <main class="game" data-game>
+  <button class="soundToggle" id="soundToggle" data-sound-toggle type="button" aria-label="音を出す" aria-pressed="false">
+    <img class="soundIcon soundIconMute" id="soundIconMute" src={soundMuteUrl.src} alt="" width="24" height="24" data-sound-icon-mute />
+    <img class="soundIcon soundIconMax" id="soundIconMax" src={soundMaxUrl.src} alt="" width="24" height="24" data-sound-icon-max hidden />
+  </button>
+
   <h1>なぞってコネクト</h1>
 
   <div class="hud" aria-label="ゲーム情報">

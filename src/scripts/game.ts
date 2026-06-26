@@ -1,6 +1,15 @@
 type TileKind = "normal" | "special";
 type ChainMode = "color" | "special";
 type ChainLineStyle = "normal" | "rainbow" | "specialCreate" | "specialEffect";
+type SoundKey =
+  | "trace"
+  | "rainbow"
+  | "effectiveGenerate"
+  | "effectiveChain"
+  | "removeNormal"
+  | "removeBomb"
+  | "removeReplace"
+  | "timeUp";
 type GameTile = HTMLDivElement;
 type BoardCell = GameTile | null;
 type Point = { x: number; y: number };
@@ -23,6 +32,17 @@ const isGameTile = (element: Element | null): element is GameTile => {
   return element instanceof HTMLDivElement && element.classList.contains("tile");
 };
 
+const soundUrls: Record<SoundKey, string> = {
+  trace: new URL("../../resources/sound/se/trace.mp3", import.meta.url).href,
+  rainbow: new URL("../../resources/sound/se/rainbow.mp3", import.meta.url).href,
+  effectiveGenerate: new URL("../../resources/sound/se/effective_generate.mp3", import.meta.url).href,
+  effectiveChain: new URL("../../resources/sound/se/effective_chain.mp3", import.meta.url).href,
+  removeNormal: new URL("../../resources/sound/se/remove_normal.mp3", import.meta.url).href,
+  removeBomb: new URL("../../resources/sound/se/remove_bomb.mp3", import.meta.url).href,
+  removeReplace: new URL("../../resources/sound/se/remove_replace.mp3", import.meta.url).href,
+  timeUp: new URL("../../resources/sound/se/time_up.mp3", import.meta.url).href
+};
+
 const initNazotteConnect = (): void => {
 const SIZE = 6;
 const COLORS = 5;
@@ -35,7 +55,20 @@ const timeEl = requiredElement("time", HTMLSpanElement);
 const chainEl = requiredElement("chain", HTMLSpanElement);
 const startBtn = requiredElement("start", HTMLButtonElement);
 const hintBtn = requiredElement("hint", HTMLButtonElement);
+const soundToggleBtn = requiredElement("soundToggle", HTMLButtonElement);
 const messageEl = requiredElement("message", HTMLParagraphElement);
+const soundMuteIcon = requiredElement("soundIconMute", HTMLImageElement);
+const soundMaxIcon = requiredElement("soundIconMax", HTMLImageElement);
+const sounds: Record<SoundKey, HTMLAudioElement> = {
+  trace: new Audio(soundUrls.trace),
+  rainbow: new Audio(soundUrls.rainbow),
+  effectiveGenerate: new Audio(soundUrls.effectiveGenerate),
+  effectiveChain: new Audio(soundUrls.effectiveChain),
+  removeNormal: new Audio(soundUrls.removeNormal),
+  removeBomb: new Audio(soundUrls.removeBomb),
+  removeReplace: new Audio(soundUrls.removeReplace),
+  timeUp: new Audio(soundUrls.timeUp)
+};
 
 let grid: BoardCell[][] = [];
 let selected: GameTile[] = [];
@@ -59,8 +92,40 @@ let longPressStarted = false;
 let pendingSpecialTile: GameTile | null = null;
 let startPoint: Point | null = null;
 let pointerMoved = false;
+let currentChainLineStyle: ChainLineStyle | null = null;
+let soundMuted = true;
 const LONG_PRESS_MS = 260;
 const SLIDE_START_PX = 12;
+
+/**
+ * 指定した効果音を先頭から再生する。
+ *
+ * @param key 再生する効果音の種類。
+ */
+function playSound(key: SoundKey): void {
+  if (soundMuted) return;
+  var sound = sounds[key];
+  sound.currentTime = 0;
+  void sound.play().catch(function () {
+    // ブラウザの自動再生制限で失敗した場合は、操作を妨げずに無音で続行する。
+  });
+}
+
+/**
+ * 効果音のミュート状態をUIとAudio要素へ反映する。
+ *
+ * @param muted ミュートする場合は true。
+ */
+function setSoundMuted(muted: boolean): void {
+  soundMuted = muted;
+  Object.values(sounds).forEach(function (sound) {
+    sound.muted = muted;
+  });
+  soundToggleBtn.setAttribute("aria-pressed", String(!muted));
+  soundToggleBtn.setAttribute("aria-label", muted ? "音を出す" : "音を消す");
+  soundMuteIcon.hidden = !muted;
+  soundMaxIcon.hidden = muted;
+}
 
 function randColor(): number { return Math.floor(Math.random() * COLORS); }
 function tileSize(): number { return (board.clientWidth - GAP * (SIZE - 1)) / SIZE; }
@@ -148,16 +213,22 @@ function startGame(): void {
     if (timePaused) return;
     timeLeft -= 1;
     timeEl.textContent = String(timeLeft);
-    if (timeLeft <= 0) endGame();
+    if (timeLeft <= 0) endGame("timeUp");
   }, 1000);
 }
 
-function endGame(): void {
+/**
+ * ゲームを終了し、終了理由に応じた演出を行う。
+ *
+ * @param reason 終了理由。時間切れの場合だけ専用SEを鳴らす。
+ */
+function endGame(reason: "timeUp" | "normal" = "normal"): void {
   playing = false;
   resolving = false;
   timePaused = false;
   bonusLocked = false;
   btbReady = false;
+  if (reason === "timeUp") playSound("timeUp");
   if (timer !== null) window.clearInterval(timer);
   clearSelection();
   cancelStarMoveTarget();
@@ -444,6 +515,7 @@ function addTile(tile: GameTile | null): void {
     selectedColor = color;
     selected.push(tile);
     tile.classList.add("selected");
+    playSound("trace");
     updateLine();
     chainEl.textContent = String(selected.length);
     return;
@@ -473,6 +545,7 @@ function addTile(tile: GameTile | null): void {
 
   selected.push(tile);
   tile.classList.add("selected");
+  playSound("trace");
   updateLine();
   chainEl.textContent = String(selected.length);
 }
@@ -630,6 +703,7 @@ function releaseChain(): void {
         score += gained;
         scoreEl.textContent = String(score);
         messageEl.textContent = "同色★" + specials.length + "連結！ ライン生成 +" + gained + btbText(btbInfo);
+        playSound("removeReplace");
         linePaintEffects(specials, gained);
         showBtbFloat(btbInfo);
 
@@ -658,10 +732,12 @@ function releaseChain(): void {
 
         if (colorCount >= COLORS) {
           messageEl.textContent = "全色★ミックス！ レインボーボーナス +" + gained + btbText(btbInfo);
+          playSound("removeBomb");
           megaEffects(specials.length + 2, gained);
           rainbowEffects(gained);
         } else {
           messageEl.textContent = "異色★ミックス！ 大量破壊 +" + gained + btbText(btbInfo);
+          playSound("removeBomb");
           megaEffects(specials.length, gained);
         }
         showBtbFloat(btbInfo);
@@ -693,6 +769,7 @@ function releaseChain(): void {
         score += gained;
         scoreEl.textContent = String(score);
         messageEl.textContent = "★込み5個以上！ 色全消し＋★生成 +" + gained + btbText(btbInfo);
+        playSound("removeBomb");
         megaEffects(2 + specials.length, gained);
         showBtbFloat(btbInfo);
         superExplosion = true;
@@ -718,6 +795,7 @@ function releaseChain(): void {
           targets = selected.filter(function (t) { return t !== generatedKeeper; });
           createSpecialInfo = { mode: "keep", tile: generatedKeeper, color: selectedColor };
           messageEl.textContent = n + "個消し！ ★生成 +" + gained + renText(renInfo);
+          playSound("removeNormal");
           if (renInfo && renInfo.count >= 2) {
             floatText(renInfo.count + "REN +" + renInfo.bonus, true);
           } else {
@@ -726,6 +804,7 @@ function releaseChain(): void {
         } else {
           createSpecialInfo = applyRenSpecialIfNeeded(renInfo, createSpecialInfo, targets);
           messageEl.textContent = n + "個消し！ +" + gained + renText(renInfo);
+          playSound("removeNormal");
           floatText(renInfo && renInfo.count >= 2 ? renInfo.count + "REN +" + renInfo.bonus : "+" + gained, Boolean(renInfo && renInfo.count >= 2));
         }
         score += gained;
@@ -829,6 +908,7 @@ function addLineFlashThrough(r: number, c: number, dr: number, dc: number): void
 }
 
 function rainbowEffects(gained: number): void {
+  playSound("rainbow");
   var rb = document.createElement("div");
   rb.className = "rainbowBurst";
   wrap.appendChild(rb);
@@ -1301,16 +1381,16 @@ function chainLineStyle(): ChainLineStyle {
 
   if (isSpecialChain && uniqueColorCount(specials) >= COLORS) return "rainbow";
 
+  if (isSpecialChain || (chainMode === "color" && selected.length >= 5 && specials.length > 0)) {
+    return "specialEffect";
+  }
+
   if (
     chainMode === "color" &&
     selected.length >= 3 &&
     (selected.length >= 5 || (specials.length === 0 && willCreateRenSpecial(selected.length)))
   ) {
     return "specialCreate";
-  }
-
-  if (isSpecialChain || (chainMode === "color" && selected.length >= 5 && specials.length > 0)) {
-    return "specialEffect";
   }
 
   return "normal";
@@ -1351,13 +1431,18 @@ function appendRainbowLineGradient(): string {
 
 function updateLine(): void {
   svg.innerHTML = "";
-  if (selected.length < 2) return;
+  if (selected.length < 2) {
+    currentChainLineStyle = null;
+    return;
+  }
   var points = selected.map(function (tile) {
     var p = centerOf(tile);
     return p.x + "," + p.y;
   }).join(" ");
   var poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
   var lineStyle = chainLineStyle();
+  if (currentChainLineStyle !== lineStyle) playChainLineStyleSound(lineStyle);
+  currentChainLineStyle = lineStyle;
   poly.setAttribute("points", points);
   poly.setAttribute("fill", "none");
   poly.setAttribute("stroke", lineStyle === "rainbow" ? appendRainbowLineGradient() : chainLineStroke(lineStyle));
@@ -1380,6 +1465,22 @@ function chainLineStroke(lineStyle: ChainLineStyle): string {
   return chainMode === "special" ? "rgba(255, 238, 106, .96)" : "rgba(255,255,255,.85)";
 }
 
+/**
+ * チェイン線の特殊状態に対応する条件成立SEを鳴らす。
+ *
+ * @param lineStyle 新しいチェイン線の種類。
+ */
+function playChainLineStyleSound(lineStyle: ChainLineStyle): void {
+  if (lineStyle === "specialCreate") {
+    playSound("effectiveGenerate");
+    return;
+  }
+
+  if (lineStyle === "specialEffect" || lineStyle === "rainbow") {
+    playSound("effectiveChain");
+  }
+}
+
 function floatText(text: string, mega: boolean): void {
   var f = document.createElement("div");
   f.className = "float" + (mega ? " megaText" : "");
@@ -1400,6 +1501,9 @@ function resizeBoard(): void {
 
 startBtn.addEventListener("click", startGame);
 hintBtn.addEventListener("click", showHint);
+soundToggleBtn.addEventListener("click", function () {
+  setSoundMuted(!soundMuted);
+});
 
 wrap.addEventListener("mousedown", pointerStart);
 window.addEventListener("mousemove", pointerMove);
@@ -1410,6 +1514,7 @@ window.addEventListener("touchmove", pointerMove, { passive: false });
 window.addEventListener("touchend", pointerEnd, { passive: false });
 window.addEventListener("resize", resizeBoard);
 
+setSoundMuted(true);
 buildBoard();
 };
 
