@@ -89,7 +89,16 @@
       font-size: .86em;
       text-shadow: 0 2px 8px rgba(0,0,0,.35);
     }
-    .tile.armed {
+    .board.starTargeting .tile:not(.special):not(.moveTarget) {
+      opacity: .28;
+      filter: grayscale(.45) brightness(.72);
+      transform: scale(.92);
+    }
+    .board.starTargeting .tile.special {
+      filter: brightness(1.3) saturate(1.35);
+      z-index: 6;
+    }
+    .tile.moveTarget {
       outline: 6px solid rgba(255, 245, 120, .95);
       box-shadow:
         0 0 30px rgba(255,245,120,.9),

@@ -50,13 +50,14 @@ let combo = 0;
 let lastRenCount = 0;
 let renStreak = 0;
 let btbReady = false;
-let armedSpecial: GameTile | null = null;
+let moveTargetTile: GameTile | null = null;
 let timePaused = false;
 let bonusLocked = false;
 let longPressTimer: number | null = null;
 let longPressStarted = false;
 let pendingSpecialTile: GameTile | null = null;
 let startPoint: Point | null = null;
+let pointerMoved = false;
 const LONG_PRESS_MS = 260;
 const SLIDE_START_PX = 12;
 
@@ -134,7 +135,7 @@ function startGame(): void {
   selectedColor = null;
   chainMode = null;
   dragging = false;
-  armedSpecial = null;
+  cancelStarMoveTarget();
   scoreEl.textContent = "0";
   timeEl.textContent = String(timeLeft);
   chainEl.textContent = "0";
@@ -158,7 +159,7 @@ function endGame(): void {
   btbReady = false;
   if (timer !== null) window.clearInterval(timer);
   clearSelection();
-  disarmSpecial();
+  cancelStarMoveTarget();
   startBtn.disabled = false;
   var rank = judgeRank(score);
   messageEl.textContent = "終了！スコア " + score + " / ランク: " + rank;
@@ -207,10 +208,11 @@ function pointerStart(e: MouseEvent | TouchEvent): void {
   longPressStarted = false;
   pendingSpecialTile = null;
   startPoint = p;
+  pointerMoved = false;
   clearLongPressTimer();
 
-  if (tile && armedSpecial) {
-    handleArmedTap(tile);
+  if (moveTargetTile) {
+    handleTargetedStarTap(tile);
     return;
   }
 
@@ -221,7 +223,7 @@ function pointerStart(e: MouseEvent | TouchEvent): void {
     longPressTimer = setTimeout(function () {
       if (!pendingSpecialTile || resolving || !playing) return;
       longPressStarted = true;
-      disarmSpecial();
+      cancelStarMoveTarget();
       clearSelection();
       dragging = true;
       addTile(pendingSpecialTile);
@@ -230,7 +232,7 @@ function pointerStart(e: MouseEvent | TouchEvent): void {
     return;
   }
 
-  disarmSpecial();
+  cancelStarMoveTarget();
   clearSelection();
   dragging = true;
   addTile(tile);
@@ -241,17 +243,23 @@ function pointerMove(e: MouseEvent | TouchEvent): void {
   e.preventDefault();
   var p = point(e);
 
+  if (startPoint) {
+    var moveDx = p.x - startPoint.x;
+    var moveDy = p.y - startPoint.y;
+    pointerMoved = pointerMoved || Math.sqrt(moveDx * moveDx + moveDy * moveDy) > SLIDE_START_PX;
+  }
+
   if (pendingSpecialTile && !longPressStarted) {
     if (!startPoint) return;
     var dx = p.x - startPoint.x;
     var dy = p.y - startPoint.y;
     var dist = Math.sqrt(dx * dx + dy * dy);
 
-    if (dist > SLIDE_START_PX) {
+    if (pointerMoved || dist > SLIDE_START_PX) {
       // ★を押してスライドし始めたら、長押しを待たずに★チェーン開始
       clearLongPressTimer();
       longPressStarted = true;
-      disarmSpecial();
+      cancelStarMoveTarget();
       clearSelection();
       dragging = true;
       addTile(pendingSpecialTile);
@@ -275,8 +283,11 @@ function pointerEnd(e: MouseEvent | TouchEvent): void {
     clearLongPressTimer();
     pendingSpecialTile = null;
 
-    if (isSpecial(tile)) {
-      armSpecial(tile);
+    clearSelection();
+    if (!pointerMoved && countSpecialTiles() >= 2) {
+      setStarMoveTarget(tile);
+    } else {
+      cancelStarMoveTarget();
     }
     return;
   }
@@ -286,6 +297,14 @@ function pointerEnd(e: MouseEvent | TouchEvent): void {
 
   if (!dragging) return;
   dragging = false;
+
+  if (!pointerMoved && !longPressStarted && selected.length === 1) {
+    var target = selected[0];
+    clearSelection();
+    if (canSetStarMoveTarget(target)) setStarMoveTarget(target);
+    return;
+  }
+
   releaseChain();
 }
 
@@ -304,45 +323,82 @@ function point(e: MouseEvent | TouchEvent): Point {
   return { x: e.clientX, y: e.clientY };
 }
 
-function armSpecial(tile: GameTile): void {
-  disarmSpecial();
+/**
+ * 盤面上にある★の数を返す。
+ *
+ * @return 現在の★の数。
+ */
+function countSpecialTiles(): number {
+  var count = 0;
+  for (var r = 0; r < SIZE; r++) {
+    for (var c = 0; c < SIZE; c++) {
+      if (isSpecial(grid[r][c])) count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * 指定したタイルを★移動先にできるかを返す。
+ *
+ * @param tile 移動先候補のタイル。
+ * @return 移動に使える★が盤面上にある場合は true。
+ */
+function canSetStarMoveTarget(tile: GameTile): boolean {
+  var requiredSpecialCount = isSpecial(tile) ? 2 : 1;
+  return countSpecialTiles() >= requiredSpecialCount;
+}
+
+/**
+ * ★の移動先を指定し、★以外を控えめに表示する。
+ *
+ * @param tile 移動先として指定したタイル。
+ */
+function setStarMoveTarget(tile: GameTile): void {
+  cancelStarMoveTarget();
   clearSelection();
-  armedSpecial = tile;
-  tile.classList.add("armed");
-  messageEl.textContent = "★選択中。移動させたいピースをタップ！";
+  moveTargetTile = tile;
+  board.classList.add("starTargeting");
+  tile.classList.add("moveTarget");
+  messageEl.textContent = "移動先を指定中。動かしたい★をタップ！";
 }
 
-function disarmSpecial(): void {
-  if (armedSpecial && armedSpecial.classList) armedSpecial.classList.remove("armed");
-  armedSpecial = null;
+/**
+ * ★移動先の指定状態を解除する。
+ */
+function cancelStarMoveTarget(): void {
+  if (moveTargetTile && moveTargetTile.classList) moveTargetTile.classList.remove("moveTarget");
+  moveTargetTile = null;
+  board.classList.remove("starTargeting");
 }
 
-function handleArmedTap(target: GameTile | null): void {
-  if (!armedSpecial || !target || target === armedSpecial) {
-    disarmSpecial();
+/**
+ * 指定済みのピースをタップされた★の位置へ移動し、★を消費する。
+ *
+ * @param star 消費する候補のタイル。
+ */
+function handleTargetedStarTap(star: GameTile | null): void {
+  if (!moveTargetTile || !isSpecial(star) || star === moveTargetTile) {
+    cancelStarMoveTarget();
     return;
   }
 
   if (!playing || resolving) return;
 
-  // 仕様: タップしたピースが★の場所に移動し、元の場所は空白になる。
-  // その後、空白を落下で埋める。★自体は消費される。
   resolving = true;
 
-  var sr = Number(armedSpecial.dataset.row);
-  var sc = Number(armedSpecial.dataset.col);
-  var tr = Number(target.dataset.row);
-  var tc = Number(target.dataset.col);
-
-  armedSpecial.classList.remove("armed");
-  if (armedSpecial.parentNode) armedSpecial.parentNode.removeChild(armedSpecial);
+  var sr = Number(star.dataset.row);
+  var sc = Number(star.dataset.col);
+  var tr = Number(moveTargetTile.dataset.row);
+  var tc = Number(moveTargetTile.dataset.col);
+  var target = moveTargetTile;
 
   grid[sr][sc] = target;
   grid[tr][tc] = null;
+  if (star.parentNode) star.parentNode.removeChild(star);
   moveTile(target, sr, sc);
-
   showEmptyMark(tr, tc);
-  disarmSpecial();
+  cancelStarMoveTarget();
 
   score += 120;
   scoreEl.textContent = String(score);
@@ -360,6 +416,12 @@ function handleArmedTap(target: GameTile | null): void {
   }, 230);
 }
 
+/**
+ * 空いたマスを一時的に表示する。
+ *
+ * @param row 表示する行。
+ * @param col 表示する列。
+ */
 function showEmptyMark(row: number, col: number): void {
   var p = pos(row, col);
   var mark = document.createElement("div");
@@ -960,7 +1022,7 @@ function vanishDropAndFill(tiles: GameTile[], createSpecialInfo: CreateSpecialIn
   chainMode = null;
   updateLine();
   chainEl.textContent = "0";
-  disarmSpecial();
+  cancelStarMoveTarget();
 
   setTimeout(function () {
     tiles.forEach(function (tile) {
