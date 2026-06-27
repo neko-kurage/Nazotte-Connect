@@ -92,6 +92,7 @@ let longPressStarted = false;
 let pendingSpecialTile: GameTile | null = null;
 let startPoint: Point | null = null;
 let pointerMoved = false;
+let activeBoardTouch = false;
 let currentChainLineStyle: ChainLineStyle | null = null;
 let soundMuted = true;
 const soundChannels: Record<SoundKey, SoundChannel> = {
@@ -372,6 +373,10 @@ function isSpecial(tile: GameTile | null): tile is GameTile {
   return Boolean(tile && tile.dataset.type === "special");
 }
 
+function isBoardEventTarget(target: EventTarget | null): boolean {
+  return target instanceof Node && (board.contains(target) || svg.contains(target));
+}
+
 function adjacent(a: GameTile, b: GameTile): boolean {
   var ar = Number(a.dataset.row), ac = Number(a.dataset.col);
   var br = Number(b.dataset.row), bc = Number(b.dataset.col);
@@ -381,6 +386,9 @@ function adjacent(a: GameTile, b: GameTile): boolean {
 
 function pointerStart(e: MouseEvent | TouchEvent): void {
   if (!playing || resolving || bonusLocked) return;
+  if (!isBoardEventTarget(e.target)) return;
+
+  activeBoardTouch = true;
   e.preventDefault();
 
   var p = point(e);
@@ -419,7 +427,12 @@ function pointerStart(e: MouseEvent | TouchEvent): void {
 }
 
 function pointerMove(e: MouseEvent | TouchEvent): void {
-  if (!playing || resolving || bonusLocked) return;
+  if (!playing || resolving || bonusLocked) {
+    cancelPointerInput();
+    return;
+  }
+  if (!activeBoardTouch) return;
+
   e.preventDefault();
   var p = point(e);
 
@@ -455,7 +468,13 @@ function pointerMove(e: MouseEvent | TouchEvent): void {
 }
 
 function pointerEnd(e: MouseEvent | TouchEvent): void {
-  if (!playing || resolving || bonusLocked) return;
+  if (!playing || resolving || bonusLocked) {
+    cancelPointerInput();
+    return;
+  }
+  if (!activeBoardTouch) return;
+
+  activeBoardTouch = false;
   e.preventDefault();
 
   if (pendingSpecialTile && !longPressStarted) {
@@ -486,6 +505,14 @@ function pointerEnd(e: MouseEvent | TouchEvent): void {
   }
 
   releaseChain();
+}
+
+function cancelPointerInput(): void {
+  activeBoardTouch = false;
+  dragging = false;
+  pendingSpecialTile = null;
+  longPressStarted = false;
+  clearLongPressTimer();
 }
 
 function clearLongPressTimer(): void {
@@ -1599,7 +1626,7 @@ function resizeBoard(): void {
 
 startBtn.addEventListener("click", function () {
   if (playing) {
-    endGame("timeUp");
+    endGame("normal");
     return;
   }
   startGame();
@@ -1616,6 +1643,7 @@ window.addEventListener("mouseup", pointerEnd);
 wrap.addEventListener("touchstart", pointerStart, { passive: false });
 window.addEventListener("touchmove", pointerMove, { passive: false });
 window.addEventListener("touchend", pointerEnd, { passive: false });
+window.addEventListener("touchcancel", cancelPointerInput, { passive: true });
 window.addEventListener("resize", resizeBoard);
 
 setSoundMuted(true);
