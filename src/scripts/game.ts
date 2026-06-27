@@ -20,13 +20,9 @@ type BtbInfo = { active: boolean; points: number };
 type KeepSpecialInfo = { mode: "keep"; tile: GameTile; color: number | null };
 type NormalCellsInfo = { mode: "normalCells"; cells: CellPoint[]; color: number; usedSpecials: GameTile[] };
 type CreateSpecialInfo = KeepSpecialInfo | NormalCellsInfo | null;
-type SoundChannel = {
-  /** 同じ効果音を重ねるためのAudio要素プール。 */
-  players: HTMLAudioElement[];
-  /** 次に使う候補位置。 */
-  nextIndex: number;
-  /** 直近に鳴らした時刻。 */
-  lastPlayedAt: number;
+type WebkitAudioWindow = Window & {
+  /** Safari 旧実装で使う AudioContext コンストラクタ。 */
+  webkitAudioContext?: typeof AudioContext;
 };
 
 const requiredElement = <T extends Element>(id: string, expected: { new (...args: unknown[]): T }): T => {
@@ -95,34 +91,28 @@ let pointerMoved = false;
 let activeBoardTouch = false;
 let currentChainLineStyle: ChainLineStyle | null = null;
 let soundMuted = true;
-const soundChannels: Record<SoundKey, SoundChannel> = {
-  start: createSoundChannel("start"),
-  trace: createSoundChannel("trace"),
-  rainbow: createSoundChannel("rainbow"),
-  effectiveGenerate: createSoundChannel("effectiveGenerate"),
-  effectiveChain: createSoundChannel("effectiveChain"),
-  removeNormal: createSoundChannel("removeNormal"),
-  removeBomb: createSoundChannel("removeBomb"),
-  removeReplace: createSoundChannel("removeReplace"),
-  timeUp: createSoundChannel("timeUp")
+let audioContext: AudioContext | null = null;
+let audioGain: GainNode | null = null;
+let audioReady = false;
+let audioPreparing: Promise<void> | null = null;
+const soundBuffers: Partial<Record<SoundKey, AudioBuffer>> = {};
+const soundLastPlayedAt: Record<SoundKey, number> = {
+  start: -Infinity,
+  trace: -Infinity,
+  rainbow: -Infinity,
+  effectiveGenerate: -Infinity,
+  effectiveChain: -Infinity,
+  removeNormal: -Infinity,
+  removeBomb: -Infinity,
+  removeReplace: -Infinity,
+  timeUp: -Infinity
 };
 const LONG_PRESS_MS = 260;
 const SLIDE_START_PX = 12;
 const REN_SCORE_STEP_CAP = 10;
-const soundPoolLimits: Record<SoundKey, number> = {
-  start: 1,
-  trace: 4,
-  rainbow: 2,
-  effectiveGenerate: 2,
-  effectiveChain: 2,
-  removeNormal: 3,
-  removeBomb: 3,
-  removeReplace: 3,
-  timeUp: 1
-};
 const soundCooldownMs: Record<SoundKey, number> = {
   start: 0,
-  trace: 34,
+  trace: 20,
   rainbow: 90,
   effectiveGenerate: 150,
   effectiveChain: 150,
@@ -133,94 +123,90 @@ const soundCooldownMs: Record<SoundKey, number> = {
 };
 
 /**
- * 効果音再生用のAudio要素を作成する。
+ * 効果音用の AudioContext を返す。
  *
- * @param key 効果音の種類。
- * @return 初期化済みのAudio要素。
+ * @return 効果音のデコードと再生に使う AudioContext。
  */
-function createSoundPlayer(key: SoundKey): HTMLAudioElement {
-  var player = new Audio(soundUrls[key]);
-  player.preload = "metadata";
-  player.muted = soundMuted;
-  return player;
+function getAudioContext(): AudioContext {
+  if (!audioContext) {
+    var AudioContextClass = window.AudioContext || (window as WebkitAudioWindow).webkitAudioContext;
+    if (!AudioContextClass) throw new Error("AudioContext is not supported.");
+
+    audioContext = new AudioContextClass();
+    audioGain = audioContext.createGain();
+    audioGain.gain.value = soundMuted ? 0 : 1;
+    audioGain.connect(audioContext.destination);
+  }
+
+  return audioContext;
 }
 
 /**
- * 効果音ごとの再生状態を作成する。
+ * 効果音ファイルを一度だけ読み込み、AudioBuffer へデコードする。
  *
- * @param key 効果音の種類。
- * @return 再生プールを持つチャンネル。
+ * @return 準備完了時に解決する Promise。
  */
-function createSoundChannel(key: SoundKey): SoundChannel {
-  return {
-    players: [createSoundPlayer(key)],
-    nextIndex: 0,
-    lastPlayedAt: -Infinity
-  };
-}
+async function prepareAudio(): Promise<void> {
+  if (audioReady) return;
+  if (audioPreparing) return audioPreparing;
 
-/**
- * 再利用できるAudio要素を探し、必要ならプールを上限まで増やす。
- *
- * @param key 効果音の種類。
- * @return 今回の再生に使うAudio要素。上限まで埋まっている場合は null。
- */
-function takeSoundPlayer(key: SoundKey): HTMLAudioElement | null {
-  var channel = soundChannels[key];
-  var players = channel.players;
+  audioPreparing = (async function () {
+    try {
+      var ctx = getAudioContext();
+      await ctx.resume();
 
-  for (var i = 0; i < players.length; i++) {
-    var index = (channel.nextIndex + i) % players.length;
-    var player = players[index];
-    if (player.paused || player.ended) {
-      channel.nextIndex = (index + 1) % players.length;
-      return player;
+      await Promise.all(
+        (Object.keys(soundUrls) as SoundKey[]).map(async function (key) {
+          if (soundBuffers[key]) return;
+
+          var response = await fetch(soundUrls[key]);
+          if (!response.ok) throw new Error("Failed to load sound: " + key);
+          var arrayBuffer = await response.arrayBuffer();
+          soundBuffers[key] = await ctx.decodeAudioData(arrayBuffer);
+        })
+      );
+
+      audioReady = true;
+    } finally {
+      audioPreparing = null;
     }
-  }
+  })();
 
-  if (players.length < soundPoolLimits[key]) {
-    var player = createSoundPlayer(key);
-    players.push(player);
-    channel.nextIndex = players.length % soundPoolLimits[key];
-    return player;
-  }
-
-  return null;
+  return audioPreparing;
 }
 
 /**
- * 指定した効果音を先頭から再生する。
+ * 指定した効果音を AudioBufferSourceNode として再生する。
  *
  * @param key 再生する効果音の種類。
  */
 function playSound(key: SoundKey): void {
   if (soundMuted) return;
-  var channel = soundChannels[key];
-  var now = performance.now();
-  if (now - channel.lastPlayedAt < soundCooldownMs[key]) return;
+  if (!audioContext || !audioReady) return;
 
-  var sound = takeSoundPlayer(key);
-  if (!sound) return;
-  channel.lastPlayedAt = now;
-  sound.currentTime = 0;
-  void sound.play().catch(function () {
-    // ブラウザの自動再生制限で失敗した場合は、操作を妨げずに無音で続行する。
-  });
+  var now = performance.now();
+  if (now - soundLastPlayedAt[key] < soundCooldownMs[key]) return;
+
+  var buffer = soundBuffers[key];
+  var gain = audioGain;
+  if (!buffer || !gain) return;
+
+  soundLastPlayedAt[key] = now;
+  var source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(gain);
+  source.start();
 }
 
 /**
- * 効果音のミュート状態をUIとAudio要素へ反映する。
+ * 効果音のミュート状態をUIとゲインへ反映する。
  *
  * @param muted ミュートする場合は true。
  */
 function setSoundMuted(muted: boolean): void {
   soundMuted = muted;
-  Object.values(soundChannels).forEach(function (channel) {
-    channel.players.forEach(function (sound) {
-      sound.muted = muted;
-      if (!muted) sound.load();
-    });
-  });
+  if (audioGain) audioGain.gain.value = muted ? 0 : 1;
+
   soundToggleBtn.setAttribute("aria-pressed", String(!muted));
   soundToggleBtn.setAttribute("aria-label", muted ? "音を出す" : "音を消す");
   soundMuteIcon.hidden = !muted;
@@ -1624,16 +1610,30 @@ function resizeBoard(): void {
   updateLine();
 }
 
-startBtn.addEventListener("click", function () {
+startBtn.addEventListener("click", async function () {
   if (playing) {
     endGame("normal");
     return;
   }
+
+  if (!soundMuted) {
+    await prepareAudio().catch(function () {
+      audioReady = false;
+    });
+  }
+
   startGame();
 });
 hintBtn.addEventListener("click", showHint);
-soundToggleBtn.addEventListener("click", function () {
-  setSoundMuted(!soundMuted);
+soundToggleBtn.addEventListener("click", async function () {
+  var nextMuted = !soundMuted;
+  setSoundMuted(nextMuted);
+
+  if (!nextMuted) {
+    await prepareAudio().catch(function () {
+      audioReady = false;
+    });
+  }
 });
 
 wrap.addEventListener("mousedown", pointerStart);
